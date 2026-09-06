@@ -185,8 +185,8 @@ class DriveScanner:
             elif isinstance(mps, str) and mps:
                 mount_points = [m.strip() for m in mps.split(",") if m.strip()]
 
-            # Determine if media is present (has mount points or filesystem info)
-            has_media = bool(mount_points) or "IdType" in info
+            # Determine if media is present (non-empty IdType or mount points)
+            has_media = bool(mount_points) or bool(info.get("IdType", "").strip())
 
             drives.append(DriveState(
                 device=device,
