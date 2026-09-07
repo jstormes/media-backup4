@@ -73,15 +73,20 @@ so the GUI locates `makemkvcon` correctly.
 
 | | |
 |---|---|
-| Version | 1.18.3 |
+| Version | 1.18.4. The vendor serves only the current release, so 1.18.3 can no longer be downloaded. The licence is permanent and version independent, and registers 1.18.4 unchanged. |
 | Licence | Purchased permanent key (`app_Key` starts with `M-`, not the free rotating `T-` beta key). Does not expire. |
-| Build notes | Compiles clean against **ffmpeg 8 / libavcodec 62 with no patch**. Only **Qt5** is supported — 1.18.3's `configure` knows nothing about Qt6. |
-| Verified drive | LG `BD-RE BU40N` (firmware FR07) over USB, reports **"Using direct disc access mode"** — LibreDrive active, bypassing the drive's AACS. |
+| Build notes | Compiles clean against **ffmpeg 8 / libavcodec 62 with no patch**. Only **Qt5** is supported — 1.18.x's `configure` knows nothing about Qt6. |
+| Verified drives | Two Pioneer `BD-RW BDR-212D` (firmware 1.02) on SATA, both reporting **"Using direct disc access mode"** — LibreDrive active, bypassing the drive's AACS. Previously verified on an LG `BD-RE BU40N` (FR07) over USB. |
 
-Source tarballs and the licence backup are stored in the Claude Code scratchpad
-(`/tmp/claude-1000/-home-jstormes/.../scratchpad/`) — session-scoped temp files.
-They exist for the version of the session that built the system install (1.18.3);
-other sessions may not have them.
+Rebuilding it: `install-makemkv.sh` in the repo root does the whole job --
+build dependencies, both tarballs with `PREFIX=/usr/local`, the EULA prompt,
+and a link check on the installed binary. Both halves default to `/usr`, so
+the prefix has to be passed explicitly to each.
+
+Do not rely on the tarballs living in a Claude Code scratchpad; those are
+session-scoped and disappear. The script looks in `~/Downloads`, its own
+directory and `--src-dir` before falling back to downloading from the vendor,
+and verifies SHA-256 for the version it knows.
 
 ## Environment requirements
 
