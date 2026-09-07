@@ -53,6 +53,12 @@ def mkv_argv(cfg, disc_index: int, dest: Path, min_length_seconds: int) -> list[
     The source must be ``disc:N``. The binary rejects ``dev:`` outright, which
     is why the caller resolves a device path to an index immediately before
     the run.
+
+    Which *tracks* are kept is not settable here. ``--profile`` is accepted and
+    ignored -- measured 2026-09-07, MakeMKV's own FLAC profile left the audio
+    as AC3 -- and the only lever is ``app_DefaultSelectionString`` in the
+    operator's ``~/.MakeMKV/settings.conf``. See
+    docs/makemkv/track-selection.md.
     """
     argv = [*_prefix(cfg), "-r", "--progress=-same"]
     if cfg.decrypt:

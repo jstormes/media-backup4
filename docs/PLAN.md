@@ -503,6 +503,59 @@ by the three things that do not move: the exact name where it happens to
 match, MakeMKV's own designator (attribute 49, "A1"/"B2"), and failing both,
 size. ``Title.output_file`` records the answer.
 
+### Closed captions and track selection -- settled, with one correction
+
+**DVD captions are captured.** MakeMKV finds the EIA-608 captions embedded in
+the MPEG-2 video, converts them to a text subtitle track and labels it
+``S_CC608/DVD`` -- "CC->Text English ( Lossy conversion )". Verified on the
+Fresh Horses rip: the .mkv carries it as ``subrip``, and the text is real
+captions, music cues and all. "Lossy" is MakeMKV's own word and is accurate --
+the words survive, the 608 positioning, colour and roll-up styling do not.
+
+**Blu-rays generally have none to capture.** They use PGS subtitle bitmaps
+rather than line-21 captions; the SDH PGS track is the equivalent. The
+Spider-Man disc reports 22 streams -- one video, seven audio, fourteen PGS --
+and no caption stream at all.
+
+**PGS subtitles are captured, as tracks rather than files.** A Blu-ray's
+bitmaps are muxed in as ``S_HDMV/PGS``, a DVD's as ``S_VOBSUB``. No ``.sup``
+or ``.idx``/``.sub`` is written alongside.
+
+**Correction, and it is worth recording as one.** It was first concluded from
+reading MakeMKV's default selection string that non-preferred languages get
+dropped. **That is wrong.** Extracting the same Blu-ray title three ways --
+MakeMKV's default, ``+sel:all``, and the default with
+``app_PreferredLanguage="eng"`` explicitly set -- produced the same track list
+every time, Spanish subtitles and all. The rule was read, not run, and reading
+it gave the wrong answer.
+
+What *is* dropped is MakeMKV's synthesised "forced only" variant of each
+subtitle track (attribute 22 flags ``6144`` = ``ForcedSubtitles`` +
+``DerivedStream``). That is a filtered copy of a track already being kept and
+is not on the disc, so nothing is lost.
+
+**And a second correction, on top of the first.** A ``track_selection`` config
+knob was then built, writing a profile per run and passing ``--profile`` at it.
+``makemkvcon`` ignores ``--profile`` entirely. MakeMKV's *own* FLAC profile
+leaves the audio as AC3; an unknown profile name succeeds silently. Profiles
+are a GUI concept. That machinery is removed.
+
+It was declared working on the strength of comparing a short extra, which has
+no subtitles, against the main feature, which does -- two different titles. The
+profile had changed nothing; the titles differed.
+
+The lever that does work is ``app_DefaultSelectionString`` in
+``~/.MakeMKV/settings.conf`` (verified: the same title came out with a video
+track and nothing else). It is global to the user rather than per-run. A run
+could be given its own by pointing ``HOME`` at a private ``.MakeMKV`` -- proved
+to work, copying ``app_Key`` across -- but that is a shadow MakeMKV home's
+worth of machinery for determinism alone, when the defaults already keep
+everything.
+
+Written up in full, with the selection-string grammar, how to set it, and both
+mistakes and the check that catches them, in
+``docs/makemkv/track-selection.md``.
+
 ## Next steps
 
 Nothing is blocked. In rough order of worth:
