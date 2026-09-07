@@ -1,0 +1,42 @@
+# media-backup: give optical drives that report no serial a unique one.
+#
+# udisks2 builds its drive object path from vendor, model and serial, taking
+# the serial from ID_SERIAL_SHORT and falling back to ID_SERIAL. Drives that
+# report no serial to udev get ID_SERIAL set to their model string, so two
+# identical drives produce the same object path and udisks2 merges them into
+# ONE drive object.
+#
+# The consequence is not cosmetic. Drive.MediaAvailable then describes
+# whichever drive udisks2 probed last, so drives.py reports has_media=False
+# for a drive holding a disc. This machine has two PIONEER BDR-212D units:
+#
+#     sr2 -> /org/freedesktop/UDisks2/drives/PIONEER_BD_RW___BDR_212D_PIONEER_BD_RW_BDR_212D
+#     sr4 -> /org/freedesktop/UDisks2/drives/PIONEER_BD_RW___BDR_212D_PIONEER_BD_RW_BDR_212D
+#
+# ID_PATH is the discriminator: it is derived from the PCI address and ATA
+# port, so it is stable across reboots and distinct per physical socket.
+# Verified stable across a reboot on 2026-09-07.
+#
+# BOTH properties must be set, because udisks2 uses them for different jobs:
+#
+#   ID_SERIAL_SHORT  becomes Drive.Serial, which NAMES the drive object.
+#   ID_SERIAL        is the VPD used to decide WHICH block devices belong to
+#                    the same drive object.
+#
+# Setting only ID_SERIAL_SHORT renames the shared object without splitting it,
+# which measurably does not fix the bug -- both drives then share the renamed
+# object. Verified on this machine 2026-09-07.
+#
+# This only fires when ID_SERIAL_SHORT is absent, so drives that do report a
+# real serial (sr0, sr3 here) are left exactly as they are. The
+# /dev/disk/by-id symlinks do not move: 60-persistent-storage.rules has
+# already evaluated SYMLINK+= from the original ID_SERIAL by the time this
+# rule runs at 98.
+#
+# Install:
+#   sudo cp 98-media-backup-optical-serial.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=block --sysname-match='sr[0-9]*'
+
+SUBSYSTEM=="block", KERNEL=="sr[0-9]*", ENV{ID_SERIAL_SHORT}=="", ENV{ID_PATH}=="?*", \
+    ENV{ID_SERIAL_SHORT}="$env{ID_PATH}", ENV{ID_SERIAL}="$env{ID_MODEL}_$env{ID_PATH}"

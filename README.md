@@ -26,6 +26,22 @@ PyGObject is a system package, not a pip install. On Debian/Ubuntu:
 see it — create the venv with `--system-site-packages`, or run the app
 with `/usr/bin/python3` directly.
 
+`makemkvcon` is a proprietary build with its own licence key, and is not
+installable from a package. It is treated as a pre-installed system
+dependency; `config.py` refuses to start a backup without it.
+
+On a fresh Debian/Ubuntu machine:
+
+```bash
+sudo ./install-requirements.sh    # tkinter, JRE, then checks everything
+sudo ./install-makemkv.sh         # builds MakeMKV into /usr/local
+sudo ./setup-backup-drive.sh      # mounts the backup drive at media_path
+sudo cp *.rules /etc/udev/rules.d/ && sudo reboot
+./verify-setup.sh                 # read-only; confirms the result
+```
+
+See [AGENT.md](AGENT.md) for what the udev rules are for.
+
 ## Features
 
 - **Auto-discover optical drives** on startup (CD, DVD, Blu-Ray)

@@ -1,0 +1,22 @@
+# media-backup: stop the desktop from automounting optical discs.
+#
+# makemkvcon reads the raw device. A filesystem mounted underneath it can
+# block the read, and the kernel refuses to eject a mounted disc. The app
+# only unmounts as part of eject (eject.py), after a backup -- nothing
+# unmounts before the read -- so an automounted disc is a hazard.
+#
+# UDISKS_AUTO=0 clears udisks2's Block.HintAuto, which is what GNOME/gvfs
+# consults before automounting. The drive stays on the udisks2 object tree,
+# so DriveScanner still discovers it, and manual mounts still work:
+#
+#     udisksctl mount -b /dev/sr0
+#
+# Do NOT use UDISKS_IGNORE=1 here. That hides the device from udisks2
+# entirely, which would also hide it from media-backup.
+#
+# Install:
+#   sudo cp 99-media-backup-no-automount.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=block --sysname-match='sr[0-9]*'
+
+SUBSYSTEM=="block", KERNEL=="sr[0-9]*", ENV{UDISKS_AUTO}="0"
