@@ -59,6 +59,17 @@ Runs on X11. On Wayland sessions, XWayland handles rendering. If the window does
 DISPLAY=:0 python3 gui_app.py
 ```
 
+## Tests
+
+```bash
+/usr/bin/python3 -m unittest discover -s tests -t .
+```
+
+Stdlib `unittest`, no install needed (pytest will also collect them if you
+have it). The udisks2 fixtures in `tests/fixtures.py` were captured from a
+live system, so the suite is hermetic — it never touches D-Bus and needs no
+discs. The tkinter tests skip automatically without a display.
+
 ## Development
 
 See [AGENT.md](AGENT.md) for project notes, architecture details, and tooling.

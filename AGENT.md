@@ -16,7 +16,7 @@ media-backup4/
 │       ├── __main__.py     # Run via `python -m media_backup`
 │       ├── gui_app.py      # Main GUI logic
 │       └── drives.py       # Drive scanning & state management
-├── tests/                  # Unit & integration tests
+├── tests/                  # Unit tests (stdlib unittest)
 ├── docs/
 │   └── makemkv/            # MakeMKV-related documentation
 ├── gui_app.py              # Entry point (also run as module)
@@ -85,6 +85,20 @@ Drive type comes from `Drive.MediaCompatibility`, best class first:
 `optical_bd*` → "BD", `optical_dvd*` → "DVD", `optical_cd*` → "CD".
 The model string is only a fallback for drives that report no
 compatibility list.
+
+## Tests
+
+```bash
+/usr/bin/python3 -m unittest discover -s tests -t .
+```
+
+- Stdlib `unittest` — pytest is not installed on `/usr/bin/python3`, which is
+  the only interpreter with `gi`. The tests are pytest-compatible anyway.
+- `tests/fixtures.py` holds udisks2 `GetManagedObjects` payloads captured from
+  a live system, with the real D-Bus types (`Device` as a NUL-terminated
+  `list[int]`, `MountPoints` as a list of those). Audio-CD and blank-disc
+  cases are hand-built to the same shape, since they need physical media.
+- Nothing contacts D-Bus; `tests/test_gui_app.py` skips without a display.
 
 ## Logging
 
