@@ -6,7 +6,7 @@ interrupted" at the bottom).
 
 ## Done and green
 
-`/usr/bin/python3 -m unittest discover -s tests -t .` -> **378 tests, OK**.
+`/usr/bin/python3 -m unittest discover -s tests -t .` -> **413 tests, OK**.
 
 Committed already:
 
@@ -373,6 +373,136 @@ uncharacterised. Running ``mkv`` against ``iso:`` and ``file:`` sources works,
 so MKVs can still be made from the two collections already archived in the old
 formats -- nothing reads them any more, but nothing is stranded either.
 
+## Reading a real protected disc (2026-09-07)
+
+The Hancock Blu-ray was examined directly. **BDMV navigation metadata is not
+AACS-encrypted** -- only the streams are -- so ``index.bdmv``, ``MovieObject``
+and all 175 ``.mpls`` playlists can be parsed off the disc without decrypting
+anything. That is worth knowing on its own.
+
+### What the theory says, and why it does not help here
+
+The principled way to find the real feature is to do what a player does:
+``index.bdmv`` names a First Playback title, that resolves to a Movie Object,
+and its ``PlayPL`` command names a playlist. That works for **HDMV** discs,
+where the navigation is a small command list in ``MovieObject.bdmv``.
+
+Hancock is a **BD-J** disc -- it has ``BDJO/`` and ``JAR/`` -- so the playlist
+is chosen by Java bytecode, and answering "which playlist would play?"
+statically means running the disc's own application. That is why the practical
+tools are all heuristic, and why monitoring PowerDVD works when static
+analysis does not.
+
+### What the disc's data does say, plainly
+
+Parsing every playlist gave a clean answer without any of that:
+
+| playlist | duration | play items | distinct clips | chapters |
+| --- | --- | --- | --- | --- |
+| 00002 / 00004 | 1:42:14 | 19 | 19 | 16 |
+| 00001 / 00003 | 1:32:13 | 19 | 19 | 16 |
+| 00530 | 1:37:18 | 101 | **2** | 1 |
+| 00529 | 1:36:20 | 100 | **1** | 100 |
+
+The obfuscation is structural and obvious once looked at: a playlist of a
+hundred play items that all point at the *same* clip. It has a feature's
+duration and no other property of one. A real title's clips are distinct.
+
+The four survivors are **two films** -- the theatrical cut and the extended
+cut -- each authored twice with an identical clip list.
+
+### What changed
+
+MakeMKV already filters the two decoys: it reports ``TCOUNT:4`` even at
+``--minlength=5000``, which would have included them on length. So the real
+gap was duplicates, not decoys, and MakeMKV hands us what is needed to close
+it -- ``TINFO:26``, the segments map, is the clip list itself.
+
+* ``Title`` gained ``segments`` (attribute 26) and ``chapters`` (8).
+* ``selection.distinct()`` drops titles whose segments map is already taken.
+  Hancock goes from four titles to two, halving what gets written.
+* ``selection.is_degenerate()`` is the backstop for a disc where MakeMKV does
+  not filter: ten or more segments with under half of them distinct.
+* Deduplicating happens **before** the decoy count. That was a latent bug --
+  three cuts authored in pairs would have read as six features and been
+  refused.
+
+The obvious remaining gap is a disc whose decoys are *structurally plausible*
+-- distinct clips, sane chapters, feature length. Nothing here would catch
+that, and neither would MakeMKV. Watching which title a player picks stays the
+only sure answer for one of those.
+
+### Deciding whether we can decide
+
+The disc-level question is not "which title is the feature?" but "can this be
+answered from here at all?", and the answer is now explicit.
+
+``Selection.needs_operator`` is true when the disc is fine and the *choice* is
+beyond us. That is deliberately narrower than "not ok": a disc with nothing
+worth saving does not need help, because there is nothing to help with.
+
+**Decided** when there is one feature-length title, or a few that differ in
+ways real content differs.
+
+**Handed back** on any of:
+
+* more than ``max_feature_titles`` candidates -- the classic decoy pile;
+* two candidates playing *the same clips in a different order*. Genuine cuts
+  differ in which clips they use -- Hancock's extended cut pulls in clips the
+  theatrical one never touches -- so a pure reordering is the disc hiding
+  which title is real;
+* a feature-length candidate with a single chapter, which a real feature does
+  not have.
+
+When it hands back it says what it saw. The reason carries the candidate list
+-- playlist name, duration, chapter count, how many of its clips are distinct
+-- so the operator opens MakeMKV already knowing what they are choosing
+between, and the same list goes into the attempt record.
+
+The GUI stops calling these discs "Failed". They read **"Needs you"** in amber:
+nothing is broken, retrying changes nothing, and it is waiting on a person.
+An ordinary copy failure still reads as failed and still offers a retry.
+
+Two spellings of the segments map turned up and both are handled: a Blu-ray
+lists its clips (``123,141,125``), a DVD gives a cell range (``1-28``). The
+range is expanded before anything counts distinct clips, so an ordinary
+28-cell DVD title is not mistaken for a decoy.
+
+### Telling the two cuts apart, and which file is which
+
+Hancock's two surviving titles are a theatrical cut and an extended cut, and
+the clip lists say so outright. Seamless branching stores the common footage
+once and the differing segments separately:
+
+```
+shared          123 125 127 129 131 133 135 137 139 150   (10 clips)
+theatrical only 124 126 128 130 132 134 136 138 140       ( 9 clips)
+extended only   141 142 143 144 145 146 147 148 149       ( 9 clips)
+```
+
+Nine branch points, alternating shared segment and variant segment. That
+structure is the answer: ``selection.relationship()`` reports ``cut_variants``
+when the candidates all share a backbone (over half the shorter title's clips)
+and ``separate_works`` when they do not -- four episodes of a series share
+nothing but perhaps a title card and fall well under the line.
+
+**What can be derived, and what cannot.** That these are two cuts of one film,
+which is longer, and exactly which segments differ: all of it, from the disc.
+The *names* -- "Unrated Extended Version" and so on -- cannot. Those live in
+the BD-J menu's graphics and Java, not in any structured field. A later
+process gets "the longer cut" and "the shorter cut" with the evidence, and
+that is as far as the data goes.
+
+**Which file is which.** MakeMKV's suggested output filename (attribute 27)
+embeds the title's index *within the list it was showing when asked*, and the
+save pass runs a different ``--minlength`` from the scan, so that number can
+move. The archive would otherwise record four titles and leave whoever comes
+back to it guessing which ``.mkv`` is the extended cut.
+``selection.match_files()`` reconciles titles to the files actually on disk,
+by the three things that do not move: the exact name where it happens to
+match, MakeMKV's own designator (attribute 49, "A1"/"B2"), and failing both,
+size. ``Title.output_file`` records the answer.
+
 ## Next steps
 
 Nothing is blocked. In rough order of worth:
@@ -384,6 +514,13 @@ Nothing is blocked. In rough order of worth:
 - **Confirm the finished DVD is judged good.** The copy itself is proven --
   an ISO is being written right now -- but no DVD has yet reached ``judge()``,
   so the ``iso`` layout has not been exercised against a real image.
+- **Confirm the file matching on a real multi-title save.** It is tested
+  against the awkward cases but has only been exercised for real on a disc
+  where the suggested filename happened to be right.
+- **Watch a disc that genuinely defeats this.** The remaining hole is decoys
+  that are structurally plausible -- distinct clips, sane chapters, feature
+  length. Hancock is not one of those. When one turns up, the PowerDVD method
+  is what settles it, and its title list is worth recording here as a fixture.
 - **Run a disc through the mkv path for real.** Every layer is tested against
   a real transcript, but no disc has yet been read by this pipeline end to
   end. The HANCOCK Blu-ray in sr1 is the obvious candidate, and a Blu-ray is

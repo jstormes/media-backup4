@@ -87,9 +87,16 @@ FONT_CARD_TITLE = "MediaBackupCardTitle"
 FONT_HEADER = "MediaBackupHeader"
 FONT_PROBLEM = "MediaBackupProblem"
 
+#: Failures the operator can actually do something about, as opposed to ones
+#: that just need retrying. A disc whose feature cannot be told from its
+#: decoys is not broken -- it needs a person, and it should not read the same
+#: as a disc that failed to copy.
+NEEDS_OPERATOR = frozenset({model.ERR_DECOY_TITLES, model.ERR_AMBIGUOUS_TITLES})
+
 COLOUR_GOOD = "#2d932d"
 COLOUR_BAD = "#b3261e"
 COLOUR_BUSY = "#1a6fb5"
+COLOUR_ATTENTION = "#b06000"
 COLOUR_IDLE = "#999"
 COLOUR_DETAIL = "#555"
 
@@ -146,6 +153,25 @@ def state_text(state: str, total_pct: float = 0.0) -> str:
     if state == model.COPYING and total_pct:
         return f"{text} — {total_pct:.0f}%"
     return text
+
+
+def needs_operator(disc: model.Disc) -> bool:
+    """True if this disc is waiting on a person rather than on a retry."""
+    attempt = disc.last_attempt
+    return bool(disc.state == model.FAILED and attempt
+                and attempt.error_kind in NEEDS_OPERATOR)
+
+
+def disc_state_text(disc: model.Disc, total_pct: float = 0.0) -> str:
+    """What to call this disc's state on screen.
+
+    "Failed" is wrong for a disc that copied nothing because nobody could tell
+    which title to copy. Nothing is broken and retrying changes nothing; it is
+    waiting on a person.
+    """
+    if needs_operator(disc):
+        return "Needs you"
+    return state_text(disc.state, total_pct)
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +534,8 @@ class MainWindow:
         # hold, rather than guessed in pixels. Every one of the old guesses
         # clipped on this display -- "Waiting for the drive" wants 271px and
         # had 180.
-        widest_state = tuple(STATE_TEXT.values()) + (state_text(model.COPYING, 100.0),)
+        widest_state = (tuple(STATE_TEXT.values())
+                        + (state_text(model.COPYING, 100.0), "Needs you"))
         columns = (
             ("ordinal", "#", ("99",), "e", False),
             ("name", "Disc", ("Spider-Man: Across The Spider-Verse",), "w", True),
@@ -529,6 +556,7 @@ class MainWindow:
         self._tree.tag_configure("good", foreground=COLOUR_GOOD)
         self._tree.tag_configure("bad", foreground=COLOUR_BAD)
         self._tree.tag_configure("busy", foreground=COLOUR_BUSY)
+        self._tree.tag_configure("attention", foreground=COLOUR_ATTENTION)
         self._tree.tag_configure("idle", foreground=COLOUR_DETAIL)
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self._tree.yview)
@@ -617,11 +645,13 @@ class MainWindow:
         progress = f"{pct:.0f}%" if disc.is_active and pct else (
             "100%" if disc.is_good else "")
         return (disc.ordinal, disc.display_name,
-                state_text(disc.state, pct), progress)
+                disc_state_text(disc, pct), progress)
 
     def _tag_disc(self, disc: model.Disc) -> None:
         if disc.is_good:
             tag = "good"
+        elif needs_operator(disc):
+            tag = "attention"
         elif disc.state == model.FAILED:
             tag = "bad"
         elif disc.is_active:

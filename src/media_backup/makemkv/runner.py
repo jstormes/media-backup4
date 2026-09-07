@@ -31,9 +31,11 @@ from ..config import Config, has_room_for
 from . import command, inspect as layouts, messages, selection
 from .enumeration import Resolution, parse_drives, resolve
 from .outcome import BackupObservation, OutcomePolicy, Verdict, judge
-from .records import (ATTR_DURATION, ATTR_NAME, ATTR_SIZE_BYTES,
-                      ATTR_SOURCE_FILE, ATTR_TYPE, Cinfo, Msg, Prgc,
-                      Prgt, Prgv, Tcount, Tinfo, parse_line)
+from .records import (ATTR_CHAPTER_COUNT, ATTR_COMMENT, ATTR_DURATION,
+                      ATTR_NAME, ATTR_OUTPUT_FILE, ATTR_SEGMENTS_MAP,
+                      ATTR_SIZE_BYTES, ATTR_SOURCE_FILE, ATTR_TYPE,
+                      Cinfo, Msg, Prgc, Prgt, Prgv, Tcount, Tinfo,
+                      parse_line)
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +312,7 @@ class BackupRunner:
         obs.titles_expected = len(chosen.titles)
         obs.expected_bytes = selection.expected_bytes(chosen)
         obs.files_written = layouts.count_mkv(req.dest)
+        self._match_output(chosen)
         verdict = judge(obs, self._policy)
 
         error_kind = ""
@@ -378,6 +381,17 @@ class BackupRunner:
                     pass
             elif record.id == ATTR_SOURCE_FILE:
                 title.source = record.value
+            elif record.id == ATTR_SEGMENTS_MAP:
+                title.segments = record.value
+            elif record.id == ATTR_OUTPUT_FILE:
+                title.suggested_file = record.value
+            elif record.id == ATTR_COMMENT:
+                title.designator = record.value
+            elif record.id == ATTR_CHAPTER_COUNT:
+                try:
+                    title.chapters = int(record.value)
+                except ValueError:
+                    pass
         self._titles = [current[k] for k in sorted(current)]
 
         if not self._disc_name and self._titles:
@@ -492,6 +506,21 @@ class BackupRunner:
             obs.stall_reason = (
                 f"no output for {cfg.stall_timeout_s // 60} minutes")
             self.cancel(model.ERR_STALLED)
+
+    def _match_output(self, chosen: selection.Selection) -> None:
+        """Record which file on disk each chosen title became.
+
+        Without this the archive says four titles were saved and leaves
+        whoever comes back to it to guess which .mkv is the extended cut.
+        MakeMKV's suggested filename is not reliable on its own -- the index
+        in it counts within whatever title list it was showing at the time.
+        """
+        files = layouts.mkv_files(self.request.dest)
+        matched = selection.match_files(chosen.titles, files)
+        by_index = {t.index: t for t in self._titles}
+        for index, name in matched.items():
+            if index in by_index:
+                by_index[index].output_file = name
 
     def _eject(self) -> None:
         if self._ejector is None:

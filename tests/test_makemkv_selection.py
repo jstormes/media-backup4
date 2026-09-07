@@ -10,12 +10,39 @@ import unittest
 
 from media_backup import model
 from media_backup.makemkv.selection import (
-    Selection, SelectionPolicy, choose, expected_bytes,
+    CUT_VARIANTS, SEPARATE_WORKS, SINGLE, Selection, SelectionPolicy, choose,
+    describe, expected_bytes, is_degenerate, match_files, relationship,
+    segments, shared_ratio,
 )
 
 
-def title(index, duration, size=1_000_000_000):
-    return model.Title(index=index, duration=duration, size_bytes=size)
+def title(index, duration, size=1_000_000_000, segments="", source="",
+          chapters=0):
+    return model.Title(index=index, duration=duration, size_bytes=size,
+                       segments=segments, source=source, chapters=chapters)
+
+
+# Verbatim from the Hancock Blu-ray, read off the disc on 2026-09-07. Two
+# films -- a theatrical cut and an extended cut -- each authored twice with an
+# identical clip list, which is what MakeMKV reports as four titles.
+HANCOCK_THEATRICAL = ("123,124,125,126,127,128,129,130,131,132,133,134,135,"
+                      "136,137,138,139,140,150")
+HANCOCK_EXTENDED = ("123,141,125,142,127,143,129,144,131,145,133,146,135,"
+                    "147,137,148,139,149,150")
+HANCOCK = [
+    title(0, "1:32:13", 20_000_000_000, HANCOCK_THEATRICAL, "00001.mpls", 16),
+    title(1, "1:42:14", 22_000_000_000, HANCOCK_EXTENDED, "00002.mpls", 16),
+    title(2, "1:32:13", 20_000_000_000, HANCOCK_THEATRICAL, "00003.mpls", 16),
+    title(3, "1:42:14", 22_000_000_000, HANCOCK_EXTENDED, "00004.mpls", 16),
+]
+
+#: The two obfuscation playlists on that disc, as parsed from its MPLS: a
+#: hundred play items pointing at one clip. MakeMKV filters these before we
+#: see them; this is the backstop for a disc where it does not.
+HANCOCK_DECOYS = [
+    title(4, "1:36:20", 10**10, ",".join(["151"] * 100), "00529.mpls"),
+    title(5, "1:37:18", 10**10, "117," + ",".join(["151"] * 100), "00530.mpls"),
+]
 
 
 #: Verbatim from "Spider-Man: Across The Spider-Verse": one feature and a long
@@ -56,6 +83,49 @@ class TestRealDiscs(unittest.TestCase):
 
     def test_expected_bytes_is_what_the_scan_said_they_weigh(self):
         self.assertEqual(expected_bytes(choose(REAL_DVD)), 4_245_336_064)
+
+
+class TestARealProtectedDisc(unittest.TestCase):
+    """Hancock: four feature-length titles that are two films."""
+
+    def test_the_two_cuts_survive_and_the_copies_do_not(self):
+        chosen = choose(HANCOCK)
+        self.assertTrue(chosen)
+        self.assertEqual([t.source for t in chosen.titles],
+                         ["00002.mpls", "00001.mpls"])
+
+    def test_saving_all_four_would_write_every_frame_twice(self):
+        self.assertEqual(len(HANCOCK), 4)
+        self.assertEqual(len(choose(HANCOCK).titles), 2)
+
+    def test_the_obfuscation_playlists_are_rejected_on_their_structure(self):
+        """A hundred play items pointing at one clip is not a film."""
+        chosen = choose(HANCOCK + HANCOCK_DECOYS)
+        self.assertEqual([t.source for t in chosen.titles],
+                         ["00002.mpls", "00001.mpls"])
+
+    def test_the_decoys_alone_leave_nothing_to_save(self):
+        self.assertFalse(choose(HANCOCK_DECOYS))
+
+    def test_a_single_clip_title_is_not_mistaken_for_a_decoy(self):
+        """Plenty of real titles are one clip; DVDs report no segments at all."""
+        self.assertFalse(is_degenerate(title(0, "1:30:00", segments="123")))
+        self.assertFalse(is_degenerate(title(0, "1:30:00", segments="")))
+
+    def test_duplicates_are_dropped_before_the_decoy_count(self):
+        """Three cuts authored in pairs is six titles and two too many.
+
+        Counting before deduplicating would refuse a disc that is only
+        repeating itself.
+        """
+        disc = []
+        for i in range(3):
+            segs = f"{i}00,{i}01,{i}02,{i}03"
+            disc.append(title(i * 2, "1:30:00", segments=segs))
+            disc.append(title(i * 2 + 1, "1:30:00", segments=segs))
+        self.assertEqual(len(disc), 6)
+        self.assertTrue(choose(disc), "six titles, but only three films")
+        self.assertEqual(len(choose(disc).titles), 3)
 
 
 class TestDecoys(unittest.TestCase):
@@ -121,6 +191,185 @@ class TestNothingWorthSaving(unittest.TestCase):
     def test_titles_with_no_duration_are_ignored(self):
         disc = [title(0, ""), title(1, "1:30:00")]
         self.assertEqual([t.duration for t in choose(disc).titles], ["1:30:00"])
+
+
+class TestCanWeDecide(unittest.TestCase):
+    """The question the operator actually needs answered."""
+
+    def test_one_feature_is_never_in_doubt(self):
+        chosen = choose([title(0, "1:40:00", segments="1,2,3", source="a")])
+        self.assertTrue(chosen)
+        self.assertFalse(chosen.needs_operator)
+
+    def test_two_genuine_cuts_are_decided(self):
+        """Hancock: the cuts differ in which clips they use, not the order."""
+        self.assertTrue(choose(HANCOCK))
+        self.assertFalse(choose(HANCOCK).needs_operator)
+
+    def test_the_same_clips_in_a_different_order_is_not_two_cuts(self):
+        disc = [
+            title(0, "1:50:00", segments="1,2,3,4,5", source="00800.mpls", chapters=12),
+            title(1, "1:50:00", segments="5,4,3,2,1", source="00801.mpls", chapters=12),
+        ]
+        chosen = choose(disc)
+        self.assertFalse(chosen)
+        self.assertTrue(chosen.needs_operator)
+        self.assertEqual(chosen.error_kind, model.ERR_AMBIGUOUS_TITLES)
+        self.assertIn("different order", chosen.reason)
+
+    def test_a_feature_length_title_with_one_chapter_is_doubted(self):
+        disc = [
+            title(0, "1:50:00", segments="1,2,3", source="a", chapters=14),
+            title(1, "1:49:00", segments="4,5,6", source="b", chapters=1),
+        ]
+        chosen = choose(disc)
+        self.assertFalse(chosen)
+        self.assertTrue(chosen.needs_operator)
+        self.assertIn("one chapter", chosen.reason)
+
+    def test_too_many_candidates_needs_a_person(self):
+        disc = [title(i, "1:50:00", segments=f"{i}a,{i}b,{i}c") for i in range(9)]
+        chosen = choose(disc)
+        self.assertTrue(chosen.needs_operator)
+        self.assertEqual(chosen.error_kind, model.ERR_DECOY_TITLES)
+
+    def test_a_disc_with_nothing_on_it_does_not_need_a_person(self):
+        """There is nothing for them to help with."""
+        chosen = choose([title(0, "0:03:00")])
+        self.assertFalse(chosen)
+        self.assertFalse(chosen.needs_operator)
+
+    def test_the_candidates_are_handed_over_to_choose_between(self):
+        disc = [title(i, "1:50:00", segments=f"{i}a,{i}b", source=f"0080{i}.mpls",
+                      chapters=12) for i in range(9)]
+        chosen = choose(disc)
+        self.assertEqual(len(chosen.candidates), 9)
+        self.assertIn("00800.mpls", chosen.reason)
+        self.assertIn("1:50:00", chosen.reason)
+        self.assertIn("12 chapters", chosen.reason)
+        self.assertIn("MakeMKV", chosen.reason, "and what to do about it")
+
+    def test_a_long_candidate_list_is_trimmed(self):
+        disc = [title(i, "1:50:00", segments=f"{i}a,{i}b") for i in range(30)]
+        listed = choose(disc).reason
+        self.assertIn("...and 22 more", listed)
+
+    def test_candidates_are_carried_even_when_the_disc_is_decided(self):
+        self.assertEqual(len(choose(HANCOCK).candidates), 2)
+
+
+class TestSegmentsSpelling(unittest.TestCase):
+    """Blu-rays list clips; DVDs give a cell range. Both are real."""
+
+    def test_a_blu_ray_clip_list(self):
+        self.assertEqual(segments(title(0, "1:00:00", segments="123,141,125")),
+                         ["123", "141", "125"])
+
+    def test_a_dvd_cell_range(self):
+        self.assertEqual(len(segments(title(0, "1:00:00", segments="1-28"))), 28)
+
+    def test_a_range_is_not_mistaken_for_a_decoy(self):
+        """28 distinct cells, spelled as a range, is an ordinary DVD title."""
+        self.assertFalse(is_degenerate(title(0, "1:42:39", segments="1-28")))
+
+    def test_nothing_reported_is_handled(self):
+        self.assertEqual(segments(title(0, "1:00:00")), [])
+
+
+class TestDescribe(unittest.TestCase):
+    def test_it_names_what_the_operator_will_see_in_makemkv(self):
+        line = describe([title(0, "1:42:14", segments="1,2,3",
+                               source="00002.mpls", chapters=16)])
+        self.assertIn("00002.mpls", line)
+        self.assertIn("1:42:14", line)
+        self.assertIn("16 chapters", line)
+        self.assertIn("3 of 3 clips distinct", line)
+
+
+class TestTellingTheCutsApart(unittest.TestCase):
+    """Hancock carries two cuts. A later process has to be able to say which.
+
+    The clip lists say it outright. Seamless branching stores the common
+    footage once and the differing segments separately, so the two cuts share
+    a backbone and each carries its own -- 10 shared clips, 9 exclusive to
+    each, measured off the disc on 2026-09-07.
+    """
+
+    def setUp(self):
+        self.chosen = choose(HANCOCK).titles
+        self.extended, self.theatrical = self.chosen
+
+    def test_the_two_cuts_share_a_backbone(self):
+        shared = set(segments(self.extended)) & set(segments(self.theatrical))
+        self.assertEqual(len(shared), 10)
+
+    def test_and_each_carries_its_own_segments(self):
+        a, b = set(segments(self.theatrical)), set(segments(self.extended))
+        self.assertEqual(len(a - b), 9)
+        self.assertEqual(len(b - a), 9)
+
+    def test_they_read_as_cuts_of_one_film_not_two_films(self):
+        self.assertEqual(relationship(self.chosen), CUT_VARIANTS)
+        self.assertAlmostEqual(shared_ratio(self.extended, self.theatrical),
+                               10 / 19, places=2)
+
+    def test_the_longer_one_is_first(self):
+        """Which is the extended cut is the one thing duration settles."""
+        self.assertEqual(self.extended.duration, "1:42:14")
+        self.assertEqual(self.theatrical.duration, "1:32:13")
+        self.assertGreater(self.extended.seconds, self.theatrical.seconds)
+
+    def test_episodes_are_not_cuts(self):
+        """Different content shares nothing, however similar the runtimes."""
+        disc = [title(i, "0:45:00", segments=f"{i}0,{i}1,{i}2,{i}3")
+                for i in range(4)]
+        self.assertEqual(relationship(disc), SEPARATE_WORKS)
+
+    def test_one_title_relates_to_nothing(self):
+        self.assertEqual(relationship([title(0, "1:40:00", segments="1,2")]),
+                         SINGLE)
+
+    def test_titles_with_no_segments_are_not_called_cuts(self):
+        """A DVD that reports nothing must not be guessed at."""
+        disc = [title(0, "1:40:00"), title(1, "1:38:00")]
+        self.assertEqual(relationship(disc), SEPARATE_WORKS)
+
+
+class TestMatchingFilesToTitles(unittest.TestCase):
+    """Which .mkv on disk is which title -- the link the archive needs."""
+
+    def test_the_suggested_name_is_used_when_it_is_right(self):
+        titles = [title(0, "1:40:00", 4_000_000_000)]
+        titles[0].suggested_file = "Hancock-A1_t00.mkv"
+        got = match_files(titles, [("Hancock-A1_t00.mkv", 3_900_000_000)])
+        self.assertEqual(got, {0: "Hancock-A1_t00.mkv"})
+
+    def test_the_designator_carries_when_the_index_has_moved(self):
+        """The _tNN counts within whatever list MakeMKV was showing.
+
+        The save pass runs a different --minlength from the scan, so the
+        suggested name can be stale while the designator is not.
+        """
+        one = title(0, "1:40:00", 4_000_000_000)
+        one.suggested_file, one.designator = "Hancock-A1_t03.mkv", "A1"
+        got = match_files([one], [("Hancock-A1_t00.mkv", 3_900_000_000)])
+        self.assertEqual(got, {0: "Hancock-A1_t00.mkv"})
+
+    def test_size_settles_it_when_nothing_else_does(self):
+        big = title(0, "1:42:14", 22_000_000_000)
+        small = title(1, "1:32:13", 20_000_000_000)
+        got = match_files([big, small],
+                          [("b.mkv", 19_500_000_000), ("a.mkv", 21_500_000_000)])
+        self.assertEqual(got, {0: "a.mkv", 1: "b.mkv"})
+
+    def test_a_file_is_never_claimed_twice(self):
+        a = title(0, "1:40:00", 4_000_000_000)
+        b = title(1, "1:39:00", 4_000_000_001)
+        got = match_files([a, b], [("only.mkv", 4_000_000_000)])
+        self.assertEqual(list(got.values()), ["only.mkv"])
+
+    def test_nothing_written_matches_nothing(self):
+        self.assertEqual(match_files([title(0, "1:40:00")], []), {})
 
 
 class TestSelectionObject(unittest.TestCase):

@@ -67,19 +67,27 @@ def classify_layout(dest: Path) -> str:
     return UNKNOWN
 
 
+def mkv_files(dest: Path) -> list[tuple[str, int]]:
+    """The ``.mkv`` files in a saved-titles directory, with their sizes."""
+    if not dest.is_dir():
+        return []
+    out = []
+    try:
+        for path in sorted(dest.iterdir()):
+            if path.is_file() and path.suffix.lower() == ".mkv":
+                out.append((path.name, path.stat().st_size))
+    except OSError:
+        return []
+    return out
+
+
 def count_mkv(dest: Path) -> int:
     """How many ``.mkv`` files a saved-titles directory holds.
 
     Counted rather than merely detected: makemkvcon reports how many titles it
     saved, and the number of files on disk agreeing with it is the check.
     """
-    if not dest.is_dir():
-        return 0
-    try:
-        return sum(1 for p in dest.iterdir()
-                   if p.is_file() and p.suffix.lower() == ".mkv")
-    except OSError:
-        return 0
+    return len(mkv_files(dest))
 
 
 def looks_like_iso(path: Path) -> bool:

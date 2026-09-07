@@ -54,6 +54,8 @@ ERR_UNKILLABLE = "unkillable"
 ERR_COPY = "copy_failed"
 #: Too many feature-length titles to tell the real one from the decoys.
 ERR_DECOY_TITLES = "decoy_titles"
+#: Few enough to list, but something about them says do not trust the pick.
+ERR_AMBIGUOUS_TITLES = "ambiguous_titles"
 #: Nothing on the disc is long enough to be worth saving.
 ERR_NO_FEATURE = "no_feature"
 #: The job never started: the store could not clear the way for it.
@@ -77,6 +79,21 @@ class Title:
     duration: str = ""
     size_bytes: int = 0
     source: str = ""
+    #: MakeMKV's segments map, the ordered clip list behind this title
+    #: ("123,141,125,..."). Two titles with the same map are the same content
+    #: authored twice, which is most of what a Blu-ray's title list is.
+    segments: str = ""
+    chapters: int = 0
+    #: MakeMKV's suggested output filename (attribute 27). Only a suggestion:
+    #: the "_tNN" in it counts within the title list MakeMKV was showing at
+    #: the time, and the save pass runs a different --minlength from the scan.
+    #: :attr:`output_file` is what it actually became; see selection.match_files.
+    suggested_file: str = ""
+    #: MakeMKV's own designator for the title ("A1", "B2"). Unlike the _tNN
+    #: index this does not move when the title list is filtered differently.
+    designator: str = ""
+    #: The file this title actually became, filled in after the run.
+    output_file: str = ""
 
     @property
     def seconds(self) -> int:

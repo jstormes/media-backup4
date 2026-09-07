@@ -591,6 +591,34 @@ class TestBackupFlow(WindowTestCase):
         self.assertFalse(self.window._disc_buttons["cancel"].winfo_manager())
         self.assertTrue(self.window._disc_buttons["retry"].winfo_manager())
 
+    def test_a_disc_that_needs_a_person_says_so_rather_than_failed(self):
+        """"Failed" is wrong: nothing is broken and retrying changes nothing."""
+        self.runner.finish(good=False, error_kind=model.ERR_DECOY_TITLES,
+                           reason="9 titles are all about the same length")
+        self.flush()
+        self.assertEqual(self.row(self.disc, "state"), "Needs you")
+        self.assertEqual(self.window._tree.item(self.disc.disc_id, "tags"),
+                         ("attention",))
+
+    def test_an_ordinary_failure_still_reads_as_failed(self):
+        self.runner.finish(good=False, error_kind=model.ERR_COPY,
+                           reason="only 20% of the disc was written")
+        self.flush()
+        self.assertEqual(self.row(self.disc, "state"), "Failed")
+        self.assertEqual(self.window._tree.item(self.disc.disc_id, "tags"),
+                         ("bad",))
+
+    def test_the_candidate_list_reaches_the_operator(self):
+        self.runner.finish(
+            good=False, error_kind=model.ERR_DECOY_TITLES,
+            reason=("9 titles are all about the same length.\n\nBack this "
+                    "disc up by hand in MakeMKV. The candidates are:\n"
+                    "  00800.mpls -- 1:50:00, 12 chapters"))
+        self.flush()
+        detail = self.window._detail.cget("text")
+        self.assertIn("00800.mpls", detail)
+        self.assertIn("by hand", detail)
+
     def test_a_running_disc_offers_only_cancel(self):
         buttons = self.window._disc_buttons
         self.assertTrue(buttons["cancel"].winfo_manager())
