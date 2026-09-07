@@ -6,18 +6,25 @@ A Python GUI application for managing media backups.
 
 ```bash
 # Run the app
-python3 gui_app.py
+/usr/bin/python3 gui_app.py
 # or
-python3 -m media_backup
+/usr/bin/python3 -m media_backup
 ```
+
+Logging goes to stderr at INFO. Override with `MEDIA_BACKUP_LOG=DEBUG`,
+or send it to a file with `MEDIA_BACKUP_LOG_FILE=app.log`.
 
 ## Requirements
 
 - **Python 3.14+**
 - **tkinter** (included with Python on most systems)
-- **lsblk** + **udisksctl** (for drive detection)
+- **PyGObject** (`gi`) — used for the udisks2 D-Bus API
+- **udisks2** running on the system
 
-No external Python dependencies — pure standard library.
+PyGObject is a system package, not a pip install. On Debian/Ubuntu:
+`sudo apt install python3-gi`. Note that a plain virtualenv will *not*
+see it — create the venv with `--system-site-packages`, or run the app
+with `/usr/bin/python3` directly.
 
 ## Features
 

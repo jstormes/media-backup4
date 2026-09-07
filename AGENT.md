@@ -4,7 +4,7 @@
 
 - **Language**: Python 3 (python3, v3.14.4)
 - **GUI Framework**: tkinter (standard library)
-- **Drive Detection**: `lsblk` + `udisksctl`
+- **Drive Detection**: udisks2 D-Bus API via PyGObject (`gi`)
 
 ## Project Structure
 
@@ -30,8 +30,10 @@ media-backup4/
 | Tool     | Version / Path       |
 |----------|---------------------|
 | python3  | /usr/bin/python3 (3.14.4) |
-| lsblk    | /usr/bin/lsblk      |
-| udisksctl| /usr/bin/udisksctl  |
+| udisks2  | system service, reached over D-Bus |
+
+`gi` (PyGObject) is only present on `/usr/bin/python3`, not in a plain
+virtualenv. `udisksctl` and `lsblk` are no longer used by the app.
 
 ## Running the App
 
@@ -60,16 +62,32 @@ python3 -m media_backup
 
 ### Drives (`drives.py`)
 
-- `DriveState` — dataclass holding drive info (device, model, serial, size, label, mount points, etc.)
-- `DriveScanner` — two-tool approach:
-  - `lsblk` (propertified output) for model, serial, size, bus type
-  - `udisksctl info` for filesystem type, disc label, mount points
-- Handles drives even if `udisksctl` fails (shows what we have from `lsblk`)
+- `DriveState` — dataclass holding drive info (device, model, vendor, serial, size, label, mount points, media, etc.)
+- `DriveScanner` — one `ObjectManager.GetManagedObjects` D-Bus call returns
+  the whole udisks2 object tree; no subprocesses.
+- A drive is identified as optical by `Drive.MediaCompatibility`, which stays
+  populated when the tray is empty. `Drive.Optical` is **False** on an empty
+  drive and must not be used for this.
+- Disc presence comes from `Drive.MediaAvailable`, not from `Block.IdType`.
+  Audio CDs and blank discs have no filesystem and report an empty `IdType`.
+
+### Drive monitoring (`drive_monitor.py`)
+
+- Subscribes to udisks2 `InterfacesAdded` / `InterfacesRemoved`; each relevant
+  signal triggers a full rescan (one D-Bus round trip), debounced by 150 ms.
+- `InterfacesRemoved` fires for **both** a disc eject (the `Filesystem`
+  interface goes away) and a drive unplug (the `Block` interface goes away).
+  Only the latter may drop a drive from the list.
 
 ### Drive Type Detection
 
-Drive type is inferred from the model string:
-- `BD-RE`, `BD-ROM` → "BD"
-- `DVD-R`, `DVD-RAM` → "DVD-RAM"
-- `DVD` → "DVD"
-- `CD-RW`, `CD-ROM` → "CD"
+Drive type comes from `Drive.MediaCompatibility`, best class first:
+`optical_bd*` → "BD", `optical_dvd*` → "DVD", `optical_cd*` → "CD".
+The model string is only a fallback for drives that report no
+compatibility list.
+
+## Logging
+
+`MEDIA_BACKUP_LOG` sets the level (default `INFO`); `MEDIA_BACKUP_LOG_FILE`
+redirects output to a file. Without `configure_logging()` in `main()`, the
+root logger's WARNING default silently discards every `logger.info` call.
