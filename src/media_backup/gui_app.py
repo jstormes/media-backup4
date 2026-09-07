@@ -141,10 +141,7 @@ class MainWindow:
         scrollbar = ttk.Scrollbar(drives_frame, orient="vertical", command=self._canvas.yview)
         self._drives_container = ttk.Frame(self._canvas)
 
-        self._drives_container.bind(
-            "<Configure>",
-            lambda e: self._schedule_scroll_update(self._canvas),
-        )
+        self._drives_container.bind("<Configure>", self._schedule_scroll_update)
 
         self._container_id = self._canvas.create_window(
             (0, 0), window=self._drives_container, anchor="nw",
@@ -172,15 +169,24 @@ class MainWindow:
         """
         self._canvas.itemconfigure(self._container_id, width=event.width)
 
-    def _schedule_scroll_update(self, canvas: tk.Canvas) -> None:
+    def _schedule_scroll_update(self, event: tk.Event | None = None) -> None:
+        """Coalesce scroll-region recalculation; cards resize in bursts."""
         if self._scroll_dirty:
             return
         self._scroll_dirty = True
-        self.root.after(50, lambda: self._update_scroll(canvas))
+        self.root.after(50, self._update_scroll)
 
-    def _update_scroll(self, canvas: tk.Canvas) -> None:
+    def _update_scroll(self) -> None:
+        """Fit the scroll region to the cards currently packed.
+
+        With no cards the container keeps the height it last requested --
+        pack stops propagating once its final slave is gone -- so the
+        region has to be zeroed explicitly, or the canvas goes on scrolling
+        over the space where a card used to be.
+        """
         self._scroll_dirty = False
-        canvas.configure(scrollregion=canvas.bbox("all"))
+        region = self._canvas.bbox("all") if self._drive_frames else (0, 0, 0, 0)
+        self._canvas.configure(scrollregion=region)
 
     def _on_close(self) -> None:
         """Stop the D-Bus thread before tearing down the window."""
@@ -222,7 +228,7 @@ class MainWindow:
         )
 
         # Refresh scroll region
-        self._schedule_scroll_update(self._canvas)
+        self._schedule_scroll_update()
 
     # -- entry point --------------------------------------------------------
 

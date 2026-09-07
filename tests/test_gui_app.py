@@ -152,6 +152,58 @@ class TestMainWindow(unittest.TestCase):
 
 
 @unittest.skipIf(tk is None, "no display available")
+class TestScrollRegion(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("media_backup.gui_app.DriveMonitor")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.window = MainWindow()
+        self.window.root.geometry("700x500")
+        self.addCleanup(self.window.root.destroy)
+
+    def settle(self):
+        """Let the throttled after(50) fire and geometry reflow."""
+        for _ in range(6):
+            self.window.root.update_idletasks()
+            self.window.root.after(30, self.window.root.quit)
+            self.window.root.mainloop()
+
+    def region(self):
+        return [int(float(n)) for n in self.window._canvas.cget("scrollregion").split()]
+
+    def test_region_grows_with_the_card_list(self):
+        self.window._on_drives_changed([EMPTY, state("/dev/sr1"), state("/dev/sr2")])
+        self.settle()
+        tall = self.region()[3]
+        self.assertGreater(tall, 0)
+        self.window._on_drives_changed([EMPTY])
+        self.settle()
+        self.assertLess(self.region()[3], tall)
+
+    def test_region_is_empty_when_no_drives_remain(self):
+        """Pack stops propagating with no slaves, so the frame keeps its height."""
+        self.window._on_drives_changed([EMPTY])
+        self.settle()
+        self.assertGreater(self.region()[3], 0)
+        self.window._on_drives_changed([])
+        self.settle()
+        self.assertEqual(self.region(), [0, 0, 0, 0])
+
+    def test_scheduling_is_throttled(self):
+        with mock.patch.object(self.window.root, "after") as after:
+            for _ in range(5):
+                self.window._schedule_scroll_update()
+            self.assertEqual(after.call_count, 1)
+
+    def test_container_configure_triggers_a_scroll_update(self):
+        self.window._scroll_dirty = False
+        with mock.patch.object(self.window.root, "after") as after:
+            self.window._drives_container.event_generate("<Configure>")
+            self.window.root.update()
+        after.assert_called_once()
+
+
+@unittest.skipIf(tk is None, "no display available")
 class TestCanvasResize(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch("media_backup.gui_app.DriveMonitor")
