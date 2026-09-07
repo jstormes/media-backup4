@@ -102,29 +102,16 @@ def list_drives():
     )
     result = proxy.call_sync("GetManagedObjects", None,
                              Gio.DBusCallFlags.NONE, -1, None)
-    managed = result.unpack()[0]
-
-    # Quick extraction: path → interface props dict
-    def extract(ifaces):
-        d = {}
-        for i in range(len(ifaces)):
-            entry = ifaces[i]
-            name = entry[0]
-            props = {}
-            for j in range(len(entry[1])):
-                p = entry[1][j]
-                props[p[0]] = p[1] if not isinstance(p[1], dict) else dict(p[1])
-            d[name] = props
-        return d
+    managed = result.unpack()[0]  # dict path -> dict iface_name -> props
 
     optical = []
     for path, ifaces in managed.items():
-        props = extract(ifaces) if isinstance(ifaces, GLib.Variant) else {}
-        drive = props.get("org.freedesktop.UDisks2.Drive", {})
+        drive = ifaces.get("org.freedesktop.UDisks2.Drive", {})
         if drive.get("Optical"):
-            dev = path.split("/block_devices/")[-1] if "/block_devices/" in path else path.split("/")[-1]
+            dev = _device_name(path) if "/block_devices/" in path else path.split("/")[-1]
             media = drive.get("Media", "no disc")
-            optical.append((dev, drive.get("Model", "?"), media))
+            model = drive.get("Model", "?")
+            optical.append((dev, model, media))
 
     if optical:
         print(f"\nOptical drives ({len(optical)}):")
