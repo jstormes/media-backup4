@@ -15,6 +15,7 @@ output. Where something is *unverified*, it says so explicitly.
 | [`robot-mode.md`](robot-mode.md) | **Start here.** The `makemkvcon -r` command set and line protocol. This is the integration path the project uses. |
 | [`attribute-ids.md`](attribute-ids.md) | The numeric attribute IDs in `CINFO`/`TINFO`/`SINFO` lines, plus drive states and stream flags. |
 | [`engine-protocol.md`](engine-protocol.md) | The `guiserver` shared-memory protocol — a richer alternative if robot mode ever becomes insufficient. |
+| [`message-codes.md`](message-codes.md) | The `MSG` code table: where it lives on disk, how to decode any code, and the codes this project acts on. |
 | [`test-suite.md`](test-suite.md) | Comprehensive test plan with verified invocations, output examples, error cases, and a phased test sequence for the AI agent. |
 
 ## Decision: use robot mode

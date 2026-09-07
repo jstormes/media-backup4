@@ -67,8 +67,12 @@ makemkvcon -r --cache=1 info disc:9999
 # Scan a disc
 makemkvcon -r --progress=-same --cache=1 info dev:/dev/sr0
 
-# Back up a whole disc, decrypted
-makemkvcon -r --progress=-same --decrypt backup dev:/dev/sr0 /path/to/out
+# Back up a whole disc, decrypted.
+# NOTE: backup requires a disc: source. The dev: form is rejected with
+#   Backup source must start with "disc:"
+# Resolve the index from a DRV row immediately before the run, because
+# indices are assigned per scan and shift when drives are hotplugged.
+makemkvcon -r --progress=-same --decrypt --cache=1024 backup disc:0 /path/to/out
 ```
 
 ---
@@ -124,7 +128,13 @@ Codes observed in practice:
 | `5074` | Update-check-enabled notice. Benign. |
 | `5018` | Scanning CD-ROM devices (also appears as a `PRG*` name). |
 
-This list is what was observed, not exhaustive.
+This list is what was *observed here*, not the full table. The complete
+584-code table ships with the product as gettext catalogues in
+`/usr/local/share/MakeMKV/appdata.tar`, keyed by message code — see
+[`message-codes.md`](message-codes.md), which also corrects two claims made
+elsewhere in this file: there **is** a terminal completion message for
+`backup` (`5081` `Backup done.`, `5080` `Backup failed.`), and there **is** a
+read-error code for damaged discs (`2003`).
 
 ### `DRV` — one per drive slot
 

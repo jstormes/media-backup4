@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Local configuration (paths differ per machine); see config.example.json
+/config.json
+
 # Log files
 app.log
 
