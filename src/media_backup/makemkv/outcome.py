@@ -29,14 +29,22 @@ CANCELLED = "cancelled"
 class OutcomePolicy:
     """Thresholds for judging a run. Tunable once real discs have been seen."""
 
-    #: Bytes written must reach this fraction of the disc size. Catches a
-    #: truncated copy, a killed process and ENOSPC regardless of output.
-    size_ratio_floor: float = 0.90
+    #: Bytes written must reach this fraction of what the scan said the
+    #: chosen titles weigh -- and that is an over-estimate, so the floor is
+    #: low. ``TINFO:11`` is the title's size *on the disc*, not a prediction
+    #: of the remux: measured 2026-09-07, a Blu-ray came out at 0.84 of it and
+    #: a DVD at 0.98. At 0.90 every Blu-ray failed a backup that was perfect.
+    #:
+    #: This is a backstop, not the main completeness check. A copy that
+    #: stopped early fails ``progress_floor`` first; what this catches is the
+    #: case where progress lied.
+    size_ratio_floor: float = 0.70
     #: Final total progress must reach this fraction of PRGV's own max.
     progress_floor: float = 0.99
     #: ...and must not overshoot this multiple of it. A floor alone accepts a
-    #: run that saved something twice as readily as one that got it right:
-    #: Hancock wrote 88 GB where the film is 44 and passed at a ratio of 2.0.
+    #: run that saved something twice as readily as one that got it right.
+    #: Hancock's doubled run measures 1.68 against the same over-estimate, so
+    #: there is room between the two bounds for both to mean something.
     size_ratio_ceiling: float = 1.5
 
 
@@ -61,6 +69,14 @@ class BackupObservation:
     #: .mkv files actually on disk. MakeMKV's own count agreeing with this is
     #: the check; either alone can be wrong.
     files_written: int = 0
+    #: Saved files that run shorter than the disc said their title does. The
+    #: measurement completeness actually rests on: a copy that stopped early
+    #: is short, and neither figure is disturbed by container overhead.
+    titles_short: int = 0
+    #: Saved files that would not say how long they are. Not a fault, but not
+    #: a verification either -- a run holding any of these does not get to
+    #: report itself checked.
+    titles_unverified: int = 0
     #: What the scan said the chosen titles weigh. The yardstick for the
     #: output, in place of the disc's size -- an MKV run leaves out menus and
     #: unwanted tracks by design, so the disc size says nothing about it.
@@ -121,6 +137,8 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
         "titles_saved": obs.titles_saved,
         "titles_failed": obs.titles_failed,
         "files_written": obs.files_written,
+        "titles_short": obs.titles_short,
+        "titles_unverified": obs.titles_unverified,
     }
 
     # 1. Our own doing. Checked first so a cancel is never reported as a disc
@@ -166,15 +184,17 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
                        f"{obs.files_written} of {obs.titles_expected} title(s) "
                        f"saved; {n} did not", detail)
 
-    # 7. And the files have to be about as big as the scan said those titles
-    #    were. This is the check that is independent of everything MakeMKV
-    #    chose to print.
-    if obs.expected_bytes > 0 and obs.size_ratio < policy.size_ratio_floor:
+    # 8. The measurement completeness rests on. The disc said how long each
+    #    title runs and the file says how long it is; a copy that stopped
+    #    early is short. Independent of everything MakeMKV printed, and
+    #    unbothered by the container overhead that makes size a poor guide.
+    if obs.titles_short:
         return Verdict(FAILURE,
-                       f"only {obs.size_ratio:.0%} of the expected size was "
-                       f"written", detail)
+                       f"{obs.titles_short} of {obs.files_written} saved "
+                       f"title(s) run short of what the disc says they are",
+                       detail)
 
-    # 8. More on disk than those titles were said to weigh means something
+    # 9. More on disk than those titles were said to weigh means something
     #    was saved more than once. Every byte asked for is present, so this is
     #    kept and flagged rather than failed -- but it is not passed silently,
     #    which is what a floor on its own does.
@@ -183,11 +203,27 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
                        f"wrote {obs.size_ratio:.0%} of what these titles "
                        f"weigh, so something was saved more than once", detail)
 
-    # 9. Every title accounted for, and MakeMKV said so itself.
+    # 10. Where a file would not say how long it is there is nothing to check
+    #     it against, and size is all that is left. It is a weak yardstick --
+    #     MakeMKV reports a title's size on the disc, which a remux comes in
+    #     under -- so it is used only here, and the result is not called
+    #     verified. Saying "success" on this evidence is the mistake that
+    #     failed a correct backup twice, in the other direction.
+    if obs.titles_unverified:
+        if obs.expected_bytes > 0 and obs.size_ratio < policy.size_ratio_floor:
+            return Verdict(FAILURE,
+                           f"only {obs.size_ratio:.0%} of the expected size "
+                           f"was written", detail)
+        return Verdict(SUCCESS_UNVERIFIED,
+                       f"{obs.titles_unverified} saved file(s) would not say "
+                       f"how long they are, so this run is unchecked", detail)
+
+    # 11. Every title accounted for, every one as long as the disc says, and
+    #     MakeMKV said so itself.
     if obs.saw_any(messages.SUCCESS):
         return Verdict(SUCCESS, "all titles saved", detail)
 
-    # 10. Complete by every measurable standard, but MakeMKV never said so.
+    # 12. Complete by every measurable standard, but MakeMKV never said so.
     #     Keep it, flag it.
     return Verdict(SUCCESS_UNVERIFIED,
                    "the titles are all there, but MakeMKV printed no "

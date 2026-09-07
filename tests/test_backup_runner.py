@@ -17,13 +17,15 @@ from media_backup.makemkv import outcome
 from media_backup.makemkv.runner import BackupRequest, BackupRunner
 
 from . import makemkv_fixtures as fx
+from .mkv_fixtures import write_mkv
 
 DISC_SIZE = 4_556_390_400
 
 
-#: What DVD_SCAN says the feature weighs. Selection picks that title alone at
-#: the default policy: it runs 1:42:39 against extras of 2:32.
+#: What DVD_SCAN says the feature weighs and how long it runs. Selection picks
+#: that title alone at the default policy: 1:42:39 against extras of 2:32.
 FEATURE_BYTES = 4_245_336_064
+FEATURE_SECONDS = 6159
 
 
 class FakeProcess:
@@ -126,18 +128,24 @@ class RunnerTestCase(unittest.TestCase):
         base.update(kw)
         return BackupRequest(**base)
 
-    def make_output(self, count=1, ratio=0.99, expected=FEATURE_BYTES):
+    def make_output(self, titles=None, ratio=0.99, count=None):
         """Write the .mkv files a saved-titles run leaves behind.
 
-        Sparse: judging reads ``st_size`` and counts files, never the bytes,
-        so materialising four gigabytes would cost four gigabytes of RAM --
-        twice over on the usual tmpfs /tmp -- to prove nothing.
+        Real Matroska headers, because the run reads each file back and
+        compares its duration to what the disc said. Sparse past the header:
+        judging reads the declared duration and ``st_size``, never the frames.
+
+        ``titles`` is (seconds, size) per file, defaulting to the one title
+        DVD_SCAN's feature yields. Sizes differ per file on purpose -- that is
+        what lets match_files pair them up.
         """
-        self.dest.mkdir(parents=True, exist_ok=True)
-        per_file = max(1, int(expected * ratio) // count)
-        for i in range(count):
-            with (self.dest / f"Fresh Horses-A{i}_t0{i}.mkv").open("wb") as fh:
-                fh.truncate(per_file)
+        if titles is None:
+            titles = ([(FEATURE_SECONDS, FEATURE_BYTES)] if count is None
+                      else [(FEATURE_SECONDS + i, FEATURE_BYTES // count + i)
+                            for i in range(count)])
+        for i, (seconds, size) in enumerate(titles):
+            write_mkv(self.dest / f"Fresh Horses-A{i}_t0{i}.mkv",
+                      seconds, max(1, int(size * ratio)))
 
     def scripted(self, saving=None, scan=None):
         """The three processes a run spawns: enumerate, scan, save."""
@@ -213,12 +221,44 @@ class TestFailures(RunnerTestCase):
         self.run_job(h)
         self.assertIn("permissions", h.final.verdict.reason)
 
-    def test_truncated_copy_fails_even_with_a_success_message(self):
+    def test_a_copy_that_stopped_early_fails_despite_a_success_message(self):
+        """The check that matters: the file is shorter than the disc says.
+
+        Measured, not inferred from size. MakeMKV reports a title's size on
+        the disc and a remux comes in under it -- 84% on a Blu-ray -- so a
+        size ratio cannot tell a short copy from an ordinary one. A duration
+        can: a copy that stopped early is short.
+        """
         h = self.scripted()
-        h.on_line = lambda proc, line: self.make_output(ratio=0.2)
+        h.on_line = lambda proc, line: self.make_output(
+            [(FEATURE_SECONDS * 0.2, FEATURE_BYTES // 5)])
         self.run_job(h)
+
         self.assertEqual(h.final.verdict.outcome, outcome.FAILURE)
-        self.assertIn("20%", h.final.verdict.reason)
+        self.assertIn("run short", h.final.verdict.reason)
+        self.assertEqual(h.final.observation.titles_short, 1)
+
+    def test_a_file_that_will_not_say_its_length_is_not_called_verified(self):
+        """Saying "success" on evidence this thin is how a lie gets told."""
+        def sparse_bytes(proc, line):
+            self.dest.mkdir(parents=True, exist_ok=True)
+            with (self.dest / "Fresh Horses-A0_t00.mkv").open("wb") as handle:
+                handle.truncate(int(FEATURE_BYTES * 0.99))
+
+        h = self.scripted()
+        h.on_line = sparse_bytes
+        self.run_job(h)
+
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS_UNVERIFIED)
+        self.assertIn("would not say how long", h.final.verdict.reason)
+        self.assertTrue(h.final.verdict.is_good, "kept, but not claimed as checked")
+
+    def test_a_full_length_copy_passes_at_84_percent_of_the_reported_size(self):
+        """Hancock's real numbers, which a 0.90 size floor failed twice."""
+        h = self.scripted()
+        h.on_line = lambda proc, line: self.make_output(ratio=0.84)
+        self.run_job(h)
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
 
     def test_unknown_device_never_starts_a_backup(self):
         h = Harness([fx.ENUMERATION_LINES])
@@ -393,7 +433,7 @@ class TestTitleSelection(RunnerTestCase):
         ])
         h = self.scripted(scan=two_cuts)
         h.on_line = lambda proc, line: self.make_output(
-            count=2, expected=42_000_000_000)
+            [(6134, 22_000_000_000), (5533, 20_000_000_000)])
         self.run_job(h)
 
         saving = [a for a in h.argvs if "mkv" in a]

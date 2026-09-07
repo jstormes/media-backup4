@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
-from .. import events, model
+from .. import events, mkv, model
 from ..config import Config, has_room_for
 from . import command, inspect as layouts, messages, selection
 from .enumeration import Resolution, parse_drives, resolve
@@ -320,7 +320,7 @@ class BackupRunner:
         obs.titles_expected = len(chosen.titles)
         obs.expected_bytes = selection.expected_bytes(chosen)
         obs.files_written = layouts.count_mkv(req.dest)
-        self._match_output(chosen)
+        self._match_output(chosen, obs)
         verdict = judge(obs, self._policy)
 
         error_kind = ""
@@ -554,20 +554,39 @@ class BackupRunner:
                 f"no output for {cfg.stall_timeout_s // 60} minutes")
             self.cancel(model.ERR_STALLED)
 
-    def _match_output(self, chosen: selection.Selection) -> None:
-        """Record which file on disk each chosen title became.
+    def _match_output(self, chosen: selection.Selection,
+                      obs: BackupObservation) -> None:
+        """Record which file each chosen title became, and read it back.
 
-        Without this the archive says four titles were saved and leaves
-        whoever comes back to it to guess which .mkv is the extended cut.
-        MakeMKV's suggested filename is not reliable on its own -- the index
-        in it counts within whatever title list it was showing at the time.
+        Without the matching, the archive says four titles were saved and
+        leaves whoever comes back to it to guess which .mkv is the extended
+        cut -- MakeMKV's suggested filename is not reliable on its own, since
+        the index in it counts within whatever list it was showing.
+
+        Reading each file back is what lets the run be judged honestly. The
+        disc said how long the title is; the file says how long it is. A copy
+        that stopped early is short, and unlike size neither figure moves with
+        container overhead.
         """
+        tolerance = self.request.cfg.duration_tolerance_s
         files = layouts.mkv_files(self.request.dest)
         matched = selection.match_files(chosen.titles, files)
         by_index = {t.index: t for t in self._titles}
         for index, name in matched.items():
-            if index in by_index:
-                by_index[index].output_file = name
+            title = by_index.get(index)
+            if title is None:
+                continue
+            title.output_file = name
+            measured = mkv.duration_seconds(self.request.dest / name)
+            if measured is None:
+                obs.titles_unverified += 1
+                logger.warning("job %s: %s would not say how long it is",
+                               self.request.job_id, name)
+            elif title.seconds and measured < title.seconds - tolerance:
+                obs.titles_short += 1
+                logger.warning("job %s: %s runs %.0fs, disc says %ds",
+                               self.request.job_id, name, measured,
+                               title.seconds)
 
     def _eject(self) -> None:
         if self._ejector is None:

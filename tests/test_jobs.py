@@ -24,24 +24,27 @@ from media_backup.makemkv.runner import BackupRunner
 from media_backup.store import CollectionStore, StoreError
 
 from . import makemkv_fixtures as fx
+from .mkv_fixtures import write_mkv
 from .test_backup_runner import FakeProcess
 
 DISC_SIZE = 4_556_390_400
 
 
-#: What DVD_SCAN says the feature weighs; the default policy picks it alone.
+#: What DVD_SCAN says the feature weighs and how long it runs; the default
+#: policy picks that title alone.
 FEATURE_BYTES = 4_245_336_064
+FEATURE_SECONDS = 6159
 
 
 def make_output(dest: Path, ratio: float = 0.99) -> None:
-    """Write the .mkv a saved-titles run leaves behind. Sparse.
+    """Write the .mkv a saved-titles run leaves behind.
 
-    Judging reads ``st_size`` and counts files, never the bytes; materialising
-    four gigabytes would cost four gigabytes to prove nothing.
+    A real Matroska header, because the run reads the file back and compares
+    its duration to the disc's. Sparse past that: judging reads the declared
+    duration and ``st_size``, never the frames.
     """
-    dest.mkdir(parents=True, exist_ok=True)
-    with (dest / "Fresh Horses-A1_t00.mkv").open("wb") as handle:
-        handle.truncate(max(1, int(FEATURE_BYTES * ratio)))
+    write_mkv(dest / "Fresh Horses-A1_t00.mkv", FEATURE_SECONDS,
+              max(1, int(FEATURE_BYTES * ratio)))
 
 
 def drive(device=fx.SR1, label=fx.SR1_LABEL, has_media=True, **kw):

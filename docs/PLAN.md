@@ -6,7 +6,7 @@ interrupted" at the bottom).
 
 ## Done and green
 
-`/usr/bin/python3 -m unittest discover -s tests -t .` -> **420 tests, OK**.
+`/usr/bin/python3 -m unittest discover -s tests -t .` -> **424 tests, OK**.
 
 Committed already:
 
@@ -656,6 +656,82 @@ The two collections already on disk predate all of this. They hold both cuts,
 with the surplus copies beside them; the publishing skill drives from
 ``collection.json`` and stages only what a title claims.
 
+## The completeness check now measures instead of estimating (2026-09-07)
+
+Two consecutive Hancock backups, byte-for-byte identical and both correct,
+were reported **Failed: only 84% of the expected size was written**. The
+number was right. The comparison was not, and the app asserted a failure on
+evidence that could not support one.
+
+``TINFO:11`` is a title's size **on the disc**, not a prediction of the remux:
+
+| | scan said | written | ratio |
+| --- | --- | --- | --- |
+| Blu-ray, Hancock | 52,567,037,952 | 44,264,938,880 | **0.84** |
+| DVD, Fresh Horses | 4,245,336,064 | 4,161,780,422 | 0.98 |
+
+Lowering the floor would have stopped the false failure and left the real
+problem: **size cannot tell a short copy from an ordinary one**, because the
+gap between estimate and output is bigger than the gap a truncation would
+open. So the check was replaced rather than retuned.
+
+**Duration is the honest measure.** A copy that stopped early is short, the
+disc said how long each title runs, and neither figure moves with container
+overhead or dropped tracks. ``media_backup.mkv`` reads it straight out of the
+Matroska container -- Segment, Info, TimestampScale, Duration, element ids from
+RFC 9559 -- rather than shelling out to ffprobe, so a backup tool does not
+acquire a media framework to answer a question the file already carries. It
+agrees with ffprobe to the millisecond on the real 20 GB output.
+
+The judging now says what it knows:
+
+* a saved file shorter than its title -> **failure**, and that is the
+  completeness check;
+* a file that will not say how long it is -> **success_unverified**, saying so.
+  Size is consulted only here, as the last thing left, and the run does not get
+  to call itself checked;
+* more bytes than the titles weigh -> **success_unverified**, flagging a
+  doubled write;
+* everything measured and matching -> **success**.
+
+Verified against the failed collection still on disk: both files read back at
+6134.368s and 5533.568s against a disc claiming 6134 and 5533, and the same run
+that was failed twice now judges ``success``.
+
+Test fixtures write real Matroska headers now. A fixture of sparse bytes would
+have exercised the "would not say how long it is" path instead of the
+measurement, which is a different answer and would have hidden the bug it was
+meant to catch.
+
+## The size floor was calibrated against the wrong yardstick (2026-09-07)
+
+The first run of the fixed pipeline produced a **correct** Hancock backup and
+was failed for it: *"only 84% of the expected size was written"*. Two files,
+two ``mkv`` runs, byte-for-byte the same sizes as the two good files from the
+run before -- and a verdict of ``copy_failed``.
+
+``TINFO:11`` is a title's size **on the disc**, not a prediction of the remux,
+and it over-estimates. Measured:
+
+| | scan said | written | ratio |
+| --- | --- | --- | --- |
+| Blu-ray, Hancock | 52,567,037,952 | 44,264,938,880 | **0.84** |
+| DVD, Fresh Horses | 4,245,336,064 | 4,161,780,422 | 0.98 |
+
+``size_ratio_floor`` was 0.90, carried over from the ``backup`` era when the
+output was the disc and the ratio really was near 1. Against this yardstick it
+fails every Blu-ray.
+
+Lowered to **0.70**, which is honest about what the check is: a *backstop*. A
+copy that stopped early fails ``progress_floor`` first, and a missing title
+shows up as a file count. What the size bound catches is the case where
+progress lied -- one of two titles absent still measures 0.44 -- and the
+ceiling at 1.5 still catches the doubled run, which measures 1.68 against the
+same over-estimate.
+
+The four measured cases are pinned as tests rather than described, so the next
+change to these numbers has to answer to them.
+
 ## Next steps
 
 Nothing is blocked. In rough order of worth:
@@ -667,9 +743,9 @@ Nothing is blocked. In rough order of worth:
 - **Confirm the finished DVD is judged good.** The copy itself is proven --
   an ISO is being written right now -- but no DVD has yet reached ``judge()``,
   so the ``iso`` layout has not been exercised against a real image.
-- **Confirm the file matching on a real multi-title save.** It is tested
-  against the awkward cases but has only been exercised for real on a disc
-  where the suggested filename happened to be right.
+- **Confirm the file matching on a real multi-title save.** Hancock's rerun
+  was the first, and both titles matched -- worth watching on a disc where the
+  suggested filename is stale rather than merely different.
 - **Publishing to Jellyfin is now a project skill**,
   ``.claude/skills/publish-to-jellyfin``, implementing the contract in
   ``docs/jellyfin/publishing.md``. It hardlinks into

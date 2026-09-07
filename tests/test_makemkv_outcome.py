@@ -67,11 +67,17 @@ class TestFailure(unittest.TestCase):
         self.assertEqual(v.outcome, FAILURE)
         self.assertEqual(v.detail["read_errors"], 812)
 
-    def test_truncated_output_despite_a_success_message(self):
-        """The size check is independent of anything MakeMKV printed."""
-        v = judge(obs(bytes_written=int(EXPECTED * 0.22)))
+    def test_a_short_copy_despite_a_success_message(self):
+        """Measured, not inferred. This is the completeness check.
+
+        Size cannot do this job: the gap between what MakeMKV reports a title
+        weighs and what the remux comes to is wider than the gap a truncation
+        would open. A Blu-ray lands at 0.84 of the estimate when it is
+        perfect.
+        """
+        v = judge(obs(titles_short=1))
         self.assertEqual(v.outcome, FAILURE)
-        self.assertIn("22%", v.reason)
+        self.assertIn("run short", v.reason)
 
     def test_progress_never_reached_the_end(self):
         v = judge(obs(max_total_progress=30000))
@@ -132,6 +138,24 @@ class TestCancelled(unittest.TestCase):
         self.assertEqual(judge(obs(message_codes={m.CANCELLED: 1})).outcome, CANCELLED)
 
 
+class TestSayingWhatItKnows(unittest.TestCase):
+    """The point of the rewrite: a verdict that reports its own evidence."""
+
+    def test_a_measured_run_is_called_success(self):
+        self.assertEqual(judge(obs()).outcome, SUCCESS)
+
+    def test_an_unmeasurable_file_is_not_called_success(self):
+        v = judge(obs(titles_unverified=1))
+        self.assertEqual(v.outcome, SUCCESS_UNVERIFIED)
+        self.assertIn("would not say how long", v.reason)
+        self.assertTrue(v.is_good, "kept -- unverified is not condemned")
+
+    def test_a_short_file_outranks_a_doubled_one(self):
+        """Something missing matters more than something written twice."""
+        v = judge(obs(titles_short=1, bytes_written=EXPECTED * 3))
+        self.assertEqual(v.outcome, FAILURE)
+
+
 class TestUnverified(unittest.TestCase):
     def test_everything_is_there_but_makemkv_never_said_so(self):
         v = judge(obs(message_codes={}))
@@ -141,6 +165,59 @@ class TestUnverified(unittest.TestCase):
     def test_a_run_with_no_progress_records_is_not_failed_on_that_basis(self):
         v = judge(obs(saw_any_progress=False, max_total_progress=0, progress_max=0))
         self.assertEqual(v.outcome, SUCCESS)
+
+
+class TestTheSizeBoundsAgainstRealRuns(unittest.TestCase):
+    """The bounds are calibrated, so calibrate them against measured runs.
+
+    `TINFO:11` is a title's size on the *disc*, not a prediction of the remux,
+    and it over-estimates -- by 16% on a Blu-ray, 2% on a DVD. A floor of 0.90
+    failed a Hancock backup that was byte-for-byte correct.
+    """
+
+    def judge_run(self, written, expected, titles=2):
+        return judge(obs(titles_expected=titles, titles_saved=titles,
+                         files_written=titles, expected_bytes=expected,
+                         bytes_written=written,
+                         message_codes={m.MKV_COMPLETE: titles}))
+
+    def test_a_correct_blu_ray_passes(self):
+        """Hancock, 2026-09-07: two cuts, both files right to the byte."""
+        v = self.judge_run(44_264_938_880, 52_567_037_952)
+        self.assertEqual(v.outcome, SUCCESS)
+
+    def test_a_correct_dvd_passes(self):
+        """Fresh Horses: the estimate is much closer on a DVD."""
+        v = self.judge_run(4_161_780_422, 4_245_336_064, titles=1)
+        self.assertEqual(v.outcome, SUCCESS)
+
+    def test_the_doubled_run_is_still_caught(self):
+        """The bounds have to leave room for both to mean something.
+
+        Hancock's doubled run measures 1.68 against the same over-estimate
+        that puts a correct one at 0.84.
+        """
+        v = self.judge_run(88_451_004_721, 52_567_037_952)
+        self.assertEqual(v.outcome, SUCCESS_UNVERIFIED)
+        self.assertIn("more than once", v.reason)
+
+    def test_a_missing_title_is_caught_by_counting_files(self):
+        """Not by size -- a file that is absent is absent, and says so."""
+        v = judge(obs(titles_expected=2, titles_saved=2, files_written=1,
+                      expected_bytes=52_567_037_952,
+                      bytes_written=23_294_632_814,
+                      message_codes={m.MKV_COMPLETE: 2}))
+        self.assertEqual(v.outcome, PARTIAL)
+        self.assertIn("1 of 2", v.reason)
+
+    def test_size_still_backstops_a_file_that_will_not_be_measured(self):
+        """Last thing left when the file will not say how long it is."""
+        v = judge(obs(titles_unverified=1,
+                      expected_bytes=52_567_037_952,
+                      bytes_written=10_000_000_000,
+                      message_codes={m.MKV_COMPLETE: 2}))
+        self.assertEqual(v.outcome, FAILURE)
+        self.assertIn("19%", v.reason)
 
 
 class TestObservation(unittest.TestCase):
@@ -158,11 +235,13 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(o.read_error_count, 7)
         self.assertEqual(o.hash_error_count, 1)
 
-    def test_the_floor_is_tunable(self):
-        o = obs(bytes_written=int(EXPECTED * 0.5))
+    def test_the_floor_is_tunable_where_it_still_applies(self):
+        """Only in the fallback: a measured run is not judged on its size."""
+        o = obs(titles_unverified=1, bytes_written=int(EXPECTED * 0.5))
         self.assertEqual(judge(o).outcome, FAILURE)
-        self.assertEqual(judge(o, OutcomePolicy(size_ratio_floor=0.4)).outcome,
-                         SUCCESS)
+        self.assertEqual(
+            judge(o, OutcomePolicy(size_ratio_floor=0.4)).outcome,
+            SUCCESS_UNVERIFIED, "still unverified -- the floor is not a check")
 
 
 if __name__ == "__main__":

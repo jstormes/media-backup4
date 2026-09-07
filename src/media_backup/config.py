@@ -59,13 +59,17 @@ class Config:
     #: Headroom required beyond the disc size before a rip may start.
     min_free_margin_bytes: int = 10 * 1024**3
     #: Fraction of the scanned titles' reported size that must land on disk.
-    #: Judged against what the scan said those titles weigh, not against the
-    #: disc: an MKV run leaves out menus, duplicate angles and unwanted
-    #: tracks by design, so the disc's own size says nothing about it.
-    size_ratio_floor: float = 0.90
+    #: Low because the yardstick over-estimates: MakeMKV reports a title's
+    #: size on the disc, and the remux comes out under it -- 0.84 on a
+    #: Blu-ray, 0.98 on a DVD. See makemkv/outcome.py.
+    size_ratio_floor: float = 0.70
     #: ...and no more than this multiple of it. Catches a run that saved the
     #: same footage twice, which a floor alone waves through.
     size_ratio_ceiling: float = 1.5
+    #: How much shorter than the disc says a saved title may run before the
+    #: run is judged incomplete. Seconds. Measured 2026-09-07, a correct
+    #: Blu-ray title came back 0.6s under what the scan reported.
+    duration_tolerance_s: int = 10
     #: A title counts as feature-length at this fraction of the longest one.
     #: See :mod:`makemkv.selection` for why this is relative and not absolute.
     feature_ratio: float = 0.90
