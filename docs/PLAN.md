@@ -556,6 +556,66 @@ Written up in full, with the selection-string grammar, how to set it, and both
 mistakes and the check that catches them, in
 ``docs/makemkv/track-selection.md``.
 
+## Where the archive has to end up: Jellyfin
+
+The collection is managed in Jellyfin, so the archive eventually has to become
+a Jellyfin library. Its layout rules are written up in
+``docs/jellyfin/library-layout.md``, taken from the Jellyfin documentation on
+2026-09-07 rather than from memory.
+
+The part that matters for decisions already taken: **two cuts of one film are
+expressible in Jellyfin, and only in ``.mkv``.** Both files go in the one
+folder with a version label each --
+``Hancock (2008) - Theatrical Cut.mkv`` beside
+``Hancock (2008) - Unrated Extended Cut.mkv`` -- and Jellyfin shows one film
+with a version selector. A ``VIDEO_TS`` or ``BDMV`` folder "do not support
+multiple versions", and ISO images are explicitly not supported, so the switch
+away from disc images was a precondition for this and not only a
+simplification.
+
+Publishing is a **separate, agent-driven process** reading
+``collection.json``, specified in ``docs/jellyfin/publishing.md``. The archive
+stays organised for recovery and evidence -- UUID directories, MakeMKV's own
+filenames -- and the Jellyfin tree is derived from it.
+
+An agent rather than a rename script because what is left is judgement, not
+transformation: the disc says it is called "Hancock" and holds two cuts, and
+does not say the year is 2008, that it is a film rather than a series, or what
+the longer cut is sold as. That means looking things up, weighing the answers
+and knowing when to stop and ask.
+
+The contract is read-only in one direction. Publishing never writes into the
+archive, reads from ``finished/`` rather than ``collections/`` -- a directory
+there is complete by construction, since finishing is an atomic rename -- and
+publishes only ``done`` discs. It must not invent a provider id: Jellyfin
+prefers local metadata over its own and gives no way to disable that, so a
+wrong id is worse than none.
+
+What that process already has from the disc: the film's name, which file is
+which title, which titles are cuts of one film, which cut is longer, which are
+extras, chapter counts and sizes.
+
+What it cannot get from the disc, and will have to be told: **the release
+year** (Jellyfin wants it and no MakeMKV attribute carries it), whether the
+disc is a film or a series, episode and season numbers, what an edition is
+actually called, and any provider id. The realistic shape is asking once per
+collection, not once per file.
+
+**Provider ids are how Jellyfin stops guessing**, and there are two ways to
+give them. A tag in the folder name (``[imdbid-tt0448157]``, ``[tmdbid-680]``,
+``[tvdbid-79168]``) works but collides with the multi-version rule -- every
+file has to repeat the whole tagged folder name before its version label. An
+NFO sidecar carries the same ids and keeps filenames plain, and Jellyfin says
+of it: *"It's currently not possible to disable .nfo metadata. Local metadata
+will always be fetched and has priority over remote metadata providers"*. For
+a publishing step that has to write two cuts into one folder, the NFO is
+probably the right answer.
+
+Worth not confusing: the disc barcode in ``Collection.identifier`` identifies
+the **physical release**, not the work. It can seed a lookup for a provider id
+but is not one. And Plex's ``{imdb-tt…}`` syntax is not Jellyfin's
+``[imdbid-tt…]``; the wrong one is ignored silently rather than rejected.
+
 ## Next steps
 
 Nothing is blocked. In rough order of worth:
@@ -570,6 +630,9 @@ Nothing is blocked. In rough order of worth:
 - **Confirm the file matching on a real multi-title save.** It is tested
   against the awkward cases but has only been exercised for real on a disc
   where the suggested filename happened to be right.
+- **Decide how publishing to Jellyfin works** -- copy, hardlink or symlink,
+  and where the year and title get asked for. See
+  ``docs/jellyfin/library-layout.md``.
 - **Watch a disc that genuinely defeats this.** The remaining hole is decoys
   that are structurally plausible -- distinct clips, sane chapters, feature
   length. Hancock is not one of those. When one turns up, the PowerDVD method
