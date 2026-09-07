@@ -28,7 +28,7 @@ from typing import Callable, Iterator, Protocol
 
 from .. import events, model
 from ..config import Config, has_room_for
-from . import command, inspect as layouts, messages
+from . import command, inspect as layouts, messages, selection
 from .enumeration import Resolution, parse_drives, resolve
 from .outcome import BackupObservation, OutcomePolicy, Verdict, judge
 from .records import (ATTR_DURATION, ATTR_NAME, ATTR_SIZE_BYTES,
@@ -43,6 +43,26 @@ PROGRESS_INTERVAL_S = 0.25
 
 TERMINATE_GRACE_S = 10.0
 KILL_GRACE_S = 5.0
+
+
+def _read_counts(record: Msg, obs: BackupObservation) -> None:
+    """Take the saved/failed title counts out of MakeMKV's own tally.
+
+    ``5036``/``5005`` carry one parameter and ``5037``/``5004`` carry two, so
+    the counts come from the run rather than from counting files afterwards.
+    The files are counted too: the two agreeing is the point.
+    """
+    def number(index: int) -> int:
+        try:
+            return int(record.params[index])
+        except (IndexError, ValueError):
+            return 0
+
+    if record.code in (messages.MKV_COMPLETE, messages.MKV_SAVED):
+        obs.titles_saved = number(0)
+    elif record.code in (messages.MKV_COMPLETE_PARTIAL, messages.MKV_SAVED_PARTIAL):
+        obs.titles_saved = number(0)
+        obs.titles_failed = number(1)
 
 
 class _Aborted(Exception):
@@ -156,6 +176,10 @@ class BackupRunner:
         self._ejector = ejector
         self._policy = policy or OutcomePolicy(
             size_ratio_floor=request.cfg.size_ratio_floor)
+        self._selection_policy = selection.SelectionPolicy(
+            feature_ratio=request.cfg.feature_ratio,
+            min_feature_seconds=request.cfg.min_feature_seconds,
+            max_feature_titles=request.cfg.max_feature_titles)
 
         self._thread: threading.Thread | None = None
         self._process: ProcessHandle | None = None
@@ -249,42 +273,43 @@ class BackupRunner:
                 f"plus the configured margin", model.ERR_NO_SPACE)
             return
 
-        # 3. The destination has to be exactly what makemkvcon expects. A
-        #    Blu-ray goes into a directory, which may already be there so long
-        #    as it is empty; a DVD becomes an image file, and makemkvcon
-        #    refuses any path already taken -- answering MSG:5068, "already
-        #    contains a backup", about an empty directory it simply did not
-        #    create. Measured 2026-09-06, after it cost a real backup.
-        if req.dest.is_dir():
-            if not layouts.is_empty(req.dest):
-                self._fail(
-                    "the destination directory is not empty; the previous "
-                    "attempt should have been moved aside first", model.ERR_COPY)
-                return
-        elif req.dest.exists():
+        # 3. An empty directory, which mkv is content to find already there.
+        if not layouts.is_empty(req.dest):
             self._fail(
-                "something is already at the destination path; makemkvcon "
-                "writes the disc image itself and will not overwrite",
-                model.ERR_COPY)
+                "the destination directory is not empty; the previous "
+                "attempt should have been moved aside first", model.ERR_COPY)
             return
 
-        # 4. Title inventory, so the archive is searchable later.
-        if req.cfg.scan_titles:
-            self._state(model.SCANNING, "reading the disc")
-            self._scan_titles(resolution.index)
-            if self._cancelled.is_set():
-                self._fail("cancelled during the disc scan", model.ERR_CANCELLED)
-                return
+        # 4. What is on the disc. Not optional any more: the run saves titles,
+        #    so something has to know what the titles are before it starts.
+        self._state(model.SCANNING, "reading the disc")
+        self._scan_titles(resolution.index)
+        if self._cancelled.is_set():
+            self._fail("cancelled during the disc scan", model.ERR_CANCELLED)
+            return
 
-        # 5. The copy itself.
+        # 5. Which of them to save -- and whether this disc can be done at all
+        #    without a human. See makemkv.selection.
+        chosen = selection.choose(self._titles, self._selection_policy)
+        if not chosen:
+            self._fail(chosen.reason, chosen.error_kind)
+            return
+        logger.info("job %s: saving %d of %d title(s), minlength %ds",
+                    req.job_id, len(chosen.titles), len(self._titles),
+                    chosen.min_length_seconds)
+
+        # 6. The copy itself.
         self._state(model.COPYING, "copying")
-        obs = self._copy(resolution.index)
+        obs = self._save_titles(resolution.index, chosen)
 
-        # 6. Judge it.
+        # 7. Judge it.
         self._state(model.VERIFYING, "checking the copy")
         obs.layout = layouts.classify_layout(req.dest)
         obs.bytes_written = layouts.tree_size(req.dest)
         obs.disc_size_bytes = req.disc_size_bytes
+        obs.titles_expected = len(chosen.titles)
+        obs.expected_bytes = selection.expected_bytes(chosen)
+        obs.files_written = layouts.count_mkv(req.dest)
         verdict = judge(obs, self._policy)
 
         error_kind = ""
@@ -368,9 +393,10 @@ class BackupRunner:
             disc_name=self._disc_name, disc_type=self._disc_type,
             titles=tuple(self._titles)))
 
-    def _copy(self, index: int) -> BackupObservation:
+    def _save_titles(self, index: int, chosen: selection.Selection) -> BackupObservation:
         req = self.request
-        argv = command.backup_argv(req.cfg, index, req.dest)
+        argv = command.mkv_argv(req.cfg, index, req.dest,
+                                chosen.min_length_seconds)
         obs = BackupObservation(disc_size_bytes=req.disc_size_bytes)
 
         try:
@@ -421,6 +447,7 @@ class BackupRunner:
         if isinstance(record, Msg):
             self._last_activity_at = now
             obs.message_codes[record.code] = obs.message_codes.get(record.code, 0) + 1
+            _read_counts(record, obs)
             # A read-error storm would flood the GUI; the count is what matters.
             if record.code not in messages.READ_ERRORS:
                 self._message(record.code, record.text)

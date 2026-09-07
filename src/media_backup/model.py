@@ -52,6 +52,10 @@ ERR_RESOLVE = "resolve_failed"
 ERR_SPAWN = "spawn_failed"
 ERR_UNKILLABLE = "unkillable"
 ERR_COPY = "copy_failed"
+#: Too many feature-length titles to tell the real one from the decoys.
+ERR_DECOY_TITLES = "decoy_titles"
+#: Nothing on the disc is long enough to be worth saving.
+ERR_NO_FEATURE = "no_feature"
 #: The job never started: the store could not clear the way for it.
 ERR_STORE = "store_failed"
 
@@ -73,6 +77,22 @@ class Title:
     duration: str = ""
     size_bytes: int = 0
     source: str = ""
+
+    @property
+    def seconds(self) -> int:
+        """``duration`` in seconds; 0 when MakeMKV reported none.
+
+        Stored as MakeMKV writes it ("1:42:39") because that is what goes in
+        the archive and what an operator reads. Everything that compares
+        durations wants a number.
+        """
+        total = 0
+        for part in self.duration.split(":"):
+            try:
+                total = total * 60 + int(part)
+            except ValueError:
+                return 0
+        return total
 
     def to_dict(self) -> dict:
         return asdict(self)

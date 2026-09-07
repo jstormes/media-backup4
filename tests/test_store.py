@@ -13,10 +13,6 @@ from media_backup.store import CollectionStore, StoreError
 
 
 class FakeDrive:
-    """Blu-ray by default: its backup is a directory tree, which is the shape
-    most of these tests are about. Pass ``media="optical_dvd"`` for the other
-    shape -- a single ISO file. See ``CollectionStore.wants_image``."""
-
     def __init__(self, label="DISC1", media="optical_bd", size=4_556_390_400):
         self.label, self.media, self.size = label, media, size
 
@@ -120,8 +116,8 @@ class TestPrepareAttempt(StoreTestCase):
         self.c = self.a_collection()
         self.d = self.store.add_disc(self.c, FakeDrive())
 
-    def test_a_blu_ray_gets_a_directory_that_is_already_there(self):
-        """makemkvcon is content to find an empty directory for a Blu-ray."""
+    def test_the_destination_is_an_empty_directory(self):
+        """One shape for every disc: mkv saves titles into a directory."""
         data, _log, _n = self.store.prepare_attempt(self.c, self.d)
         self.assertTrue(data.is_dir())
         self.assertEqual(list(data.iterdir()), [])
@@ -138,7 +134,7 @@ class TestPrepareAttempt(StoreTestCase):
         data2, _log2, n2 = self.store.prepare_attempt(self.c, self.d)
         self.assertEqual(n2, 2)
         self.assertEqual(list(data2.iterdir()), [],
-                         "a Blu-ray destination is emptied, not removed")
+                         "the destination is emptied, not removed")
         rejected = self.store.reject_dir(self.c, self.d, 1)
         self.assertTrue((rejected / "BDMV" / "index.bdmv").is_file(),
                         "the partial must be kept for inspection")
@@ -172,46 +168,6 @@ class TestPrepareAttempt(StoreTestCase):
         self.d.attempts.append(model.Attempt(attempt=1))
         self.store.prepare_attempt(self.c, self.d)
         self.assertEqual(self.store.rejected_bytes(self.c), 2048)
-
-
-class TestPrepareImageAttempt(StoreTestCase):
-    """A DVD backs up to a single ISO, not a tree. Measured 2026-09-06."""
-
-    def setUp(self):
-        super().setUp()
-        self.c = self.a_collection()
-        self.d = self.store.add_disc(self.c, FakeDrive(media="optical_dvd"))
-
-    def test_the_destination_is_a_named_image_that_does_not_exist(self):
-        data, _log, _n = self.store.prepare_attempt(self.c, self.d)
-        self.assertEqual(data.name, "data.iso")
-        self.assertFalse(data.exists(),
-                         "makemkvcon refuses a path already taken")
-        self.assertTrue(data.parent.is_dir())
-
-    def test_unknown_media_is_treated_as_an_image(self):
-        """The safe way round: this shape fails loudly, the other misleads."""
-        disc = self.store.add_disc(self.c, FakeDrive(media=""))
-        data, _, _ = self.store.prepare_attempt(self.c, disc)
-        self.assertEqual(data.name, "data.iso")
-
-    def test_an_empty_leftover_directory_is_cleared_away(self):
-        self.store.data_dir(self.c, self.d).mkdir(parents=True)
-        data, _log, _n = self.store.prepare_attempt(self.c, self.d)
-        self.assertFalse(data.exists())
-
-    def test_a_previous_image_is_moved_aside_not_deleted(self):
-        data, _, _ = self.store.prepare_attempt(self.c, self.d)
-        data.write_bytes(b"a partial rip")
-        self.d.attempts.append(model.Attempt(attempt=1))
-
-        data2, _, n2 = self.store.prepare_attempt(self.c, self.d)
-        self.assertEqual(n2, 2)
-        self.assertFalse(data2.exists())
-        rejected = self.store.reject_dir(self.c, self.d, 1)
-        self.assertTrue((rejected / "data.iso").is_file(),
-                        "the partial is evidence about why it failed")
-        self.assertEqual(self.store.rejected_bytes(self.c), len(b"a partial rip"))
 
 
 class TestFinishAndCancel(StoreTestCase):

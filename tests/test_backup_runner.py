@@ -21,19 +21,9 @@ from . import makemkv_fixtures as fx
 DISC_SIZE = 4_556_390_400
 
 
-def make_iso(path, ratio=0.99):
-    """A sparse stand-in for a decrypted DVD image.
-
-    Judging reads ``st_size`` and the ISO 9660 descriptor at 0x8001, never the
-    rest of the bytes, so materialising 4.5 GB would cost gigabytes of RAM to
-    prove nothing. This file is what a real DVD backup produces -- measured
-    2026-09-06, ``file`` calls it "ISO 9660 CD-ROM filesystem data".
-    """
-    from media_backup.makemkv.inspect import ISO_MAGIC, ISO_MAGIC_OFFSET
-    with path.open("wb") as handle:
-        handle.truncate(int(DISC_SIZE * ratio))
-        handle.seek(ISO_MAGIC_OFFSET)
-        handle.write(ISO_MAGIC)
+#: What DVD_SCAN says the feature weighs. Selection picks that title alone at
+#: the default policy: it runs 1:42:39 against extras of 2:32.
+FEATURE_BYTES = 4_245_336_064
 
 
 class FakeProcess:
@@ -83,8 +73,9 @@ class Harness:
     def spawn(self, argv):
         self.argvs.append(argv)
         lines = self.transcripts.pop(0) if self.transcripts else []
-        code = self.exit_code if "backup" in argv else 0
-        proc = FakeProcess(lines, code, self.on_line if "backup" in argv else None)
+        saving = "mkv" in argv
+        code = self.exit_code if saving else 0
+        proc = FakeProcess(lines, code, self.on_line if saving else None)
         self.processes.append(proc)
         return proc
 
@@ -118,13 +109,11 @@ class RunnerTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
-        # A Blu-ray destination: a directory, which makemkvcon is content to
-        # find already there so long as it is empty. The DVD shape -- an
-        # absent path that becomes an ISO -- is covered separately below.
+        # One shape for every disc now: mkv saves titles into a directory and
+        # is content to find an empty one already there.
         self.dest = self.root / "data"
         self.dest.mkdir()
-        self.cfg = Config(media_path=self.root, scan_titles=False,
-                          min_free_margin_bytes=0, use_stdbuf=False)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, use_stdbuf=False)
 
     def request(self, **kw):
         base = dict(
@@ -137,17 +126,24 @@ class RunnerTestCase(unittest.TestCase):
         base.update(kw)
         return BackupRequest(**base)
 
-    def make_output(self, ratio=0.99):
-        """Create a plausible finished BDMV tree in the destination.
+    def make_output(self, count=1, ratio=0.99, expected=FEATURE_BYTES):
+        """Write the .mkv files a saved-titles run leaves behind.
 
-        The stream file is sparse. Judging reads ``st_size`` and never the
-        bytes, so materialising a disc-sized buffer would cost gigabytes of
-        RAM -- twice over on the usual tmpfs /tmp -- to prove nothing.
+        Sparse: judging reads ``st_size`` and counts files, never the bytes,
+        so materialising four gigabytes would cost four gigabytes of RAM --
+        twice over on the usual tmpfs /tmp -- to prove nothing.
         """
-        (self.dest / "BDMV" / "STREAM").mkdir(parents=True, exist_ok=True)
-        (self.dest / "BDMV" / "index.bdmv").write_bytes(b"x" * 64)
-        with (self.dest / "BDMV" / "STREAM" / "00001.m2ts").open("wb") as stream:
-            stream.truncate(max(1, int(DISC_SIZE * ratio) - 64))
+        self.dest.mkdir(parents=True, exist_ok=True)
+        per_file = max(1, int(expected * ratio) // count)
+        for i in range(count):
+            with (self.dest / f"Fresh Horses-A{i}_t0{i}.mkv").open("wb") as fh:
+                fh.truncate(per_file)
+
+    def scripted(self, saving=None, scan=None):
+        """The three processes a run spawns: enumerate, scan, save."""
+        return Harness([fx.ENUMERATION_LINES,
+                        (scan or fx.DVD_SCAN).splitlines(),
+                        (saving or fx.MKV_SUCCESS_ONE).splitlines()])
 
     def run_job(self, harness, request=None):
         runner = BackupRunner(
@@ -161,7 +157,7 @@ class RunnerTestCase(unittest.TestCase):
 class TestSuccessfulBackup(RunnerTestCase):
     def setUp(self):
         super().setUp()
-        self.h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+        self.h = self.scripted()
         self.h.on_line = lambda proc, line: self.make_output()
         self.run_job(self.h)
 
@@ -171,11 +167,13 @@ class TestSuccessfulBackup(RunnerTestCase):
     def test_moves_through_the_expected_states(self):
         self.assertEqual(
             self.h.states,
-            [model.RESOLVING, model.COPYING, model.VERIFYING, model.EJECTING])
+            [model.RESOLVING, model.SCANNING, model.COPYING, model.VERIFYING,
+             model.EJECTING])
 
     def test_resolves_the_device_to_its_disc_index(self):
-        backup_argv = [a for a in self.h.argvs if "backup" in a][0]
-        self.assertIn("disc:1", backup_argv, "sr1 is disc:1 in the fixture")
+        saving = [a for a in self.h.argvs if "mkv" in a][0]
+        self.assertIn("disc:1", saving, "sr1 is disc:1 in the fixture")
+        self.assertIn("all", saving)
 
     def test_ejects_a_good_disc(self):
         self.assertEqual(len(self.h.ejects), 1)
@@ -183,7 +181,7 @@ class TestSuccessfulBackup(RunnerTestCase):
 
     def test_writes_the_log(self):
         log = (self.root / "logs" / "attempt-1.log").read_text()
-        self.assertIn("Backup done.", log)
+        self.assertIn("Copy complete.", log)
         self.assertTrue(log.startswith("# "), "the command line is recorded first")
 
     def test_emits_progress(self):
@@ -193,30 +191,30 @@ class TestSuccessfulBackup(RunnerTestCase):
 
 class TestFailures(RunnerTestCase):
     def test_dirty_disc_fails_and_counts_read_errors(self):
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_DIRTY_DISC.splitlines()])
+        h = self.scripted(saving=fx.MKV_DIRTY_DISC)
         self.run_job(h)
         self.assertEqual(h.final.verdict.outcome, outcome.FAILURE)
         self.assertEqual(h.final.observation.read_error_count, 3)
 
     def test_a_failed_disc_is_not_ejected(self):
         """It must stay in the drive so the operator can clean and retry."""
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_DIRTY_DISC.splitlines()])
+        h = self.scripted(saving=fx.MKV_DIRTY_DISC)
         self.run_job(h)
         self.assertEqual(h.ejects, [])
 
     def test_read_error_storm_is_not_forwarded_to_the_gui(self):
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_DIRTY_DISC.splitlines()])
+        h = self.scripted(saving=fx.MKV_DIRTY_DISC)
         self.run_job(h)
         codes = [e.code for e in h.events if e.kind == events.MESSAGE]
         self.assertNotIn(2003, codes, "counted, not forwarded one by one")
 
     def test_permissions_failure_explains_itself(self):
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_NO_ACCESS.splitlines()])
+        h = self.scripted(saving=fx.MKV_NO_ACCESS)
         self.run_job(h)
         self.assertIn("permissions", h.final.verdict.reason)
 
     def test_truncated_copy_fails_even_with_a_success_message(self):
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+        h = self.scripted()
         h.on_line = lambda proc, line: self.make_output(ratio=0.2)
         self.run_job(h)
         self.assertEqual(h.final.verdict.outcome, outcome.FAILURE)
@@ -243,34 +241,8 @@ class TestFailures(RunnerTestCase):
         self.assertEqual(h.final.error_kind, model.ERR_COPY)
         self.assertIn("not empty", h.final.verdict.reason)
 
-    def test_a_taken_image_path_is_refused(self):
-        """A DVD destination is a file makemkvcon insists on creating itself.
-
-        Handed a path already taken it answers MSG:5068, "already contains a
-        backup" -- about an empty directory it simply had not made. Measured
-        2026-09-06, after it cost a real backup.
-        """
-        image = self.root / "data.iso"
-        image.write_bytes(b"an earlier attempt")
-        h = Harness([fx.ENUMERATION_LINES])
-        self.run_job(h, self.request(dest=image))
-        self.assertEqual(h.final.error_kind, model.ERR_COPY)
-        self.assertIn("already at the destination", h.final.verdict.reason)
-        self.assertFalse(any("backup" in a for a in h.argvs))
-
-    def test_an_absent_image_path_is_allowed_through(self):
-        """The normal DVD case: nothing there, so makemkvcon may create it."""
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
-        image = self.root / "data.iso"
-        h.on_line = lambda proc, line: make_iso(image)
-        self.run_job(h, self.request(dest=image))
-        self.assertTrue(any("backup" in a for a in h.argvs))
-        self.assertEqual(h.final.observation.layout, "iso")
-        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
-
     def test_insufficient_space_is_refused_without_touching_the_drive(self):
-        self.cfg = Config(media_path=self.root, scan_titles=False,
-                          min_free_margin_bytes=10**18)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=10**18)
         h = Harness([fx.ENUMERATION_LINES])
         self.run_job(h, self.request(cfg=self.cfg))
         self.assertEqual(h.final.error_kind, model.ERR_NO_SPACE)
@@ -283,12 +255,12 @@ class TestCancellation(RunnerTestCase):
         release = threading.Event()
 
         def block_midway(proc, line):
-            if "PRGV:16384" in line:
+            if "PRGV:65536" in line:
                 started.set()
                 release.wait(5)
 
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()],
-                    on_line=block_midway)
+        h = self.scripted()
+        h.on_line = block_midway
         runner = BackupRunner(self.request(), h.emit, spawn=h.spawn,
                               clock=h.clock, ejector=h.eject)
         runner.start()
@@ -301,7 +273,7 @@ class TestCancellation(RunnerTestCase):
         self.assertEqual(h.final.verdict.outcome, outcome.CANCELLED)
 
     def test_a_cancelled_job_is_not_ejected(self):
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+        h = self.scripted()
         runner = BackupRunner(self.request(), h.emit, spawn=h.spawn,
                               clock=h.clock, ejector=h.eject)
         runner.cancel()
@@ -313,7 +285,7 @@ class TestCancellation(RunnerTestCase):
 class TestWatchdogs(RunnerTestCase):
     def test_a_silent_process_is_stopped(self):
         """Time is injected, so this is instant."""
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+        h = self.scripted()
 
         def jump_the_clock(proc, line):
             h.now += self.cfg.stall_timeout_s + 1
@@ -324,7 +296,7 @@ class TestWatchdogs(RunnerTestCase):
         self.assertIn("no output for", h.final.observation.stall_reason)
 
     def test_an_overrunning_job_is_stopped(self):
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+        h = self.scripted()
 
         def jump_the_clock(proc, line):
             h.now += self.cfg.max_job_duration_s + 1
@@ -336,10 +308,8 @@ class TestWatchdogs(RunnerTestCase):
 
 class TestTitleScan(RunnerTestCase):
     def test_records_the_title_inventory(self):
-        self.cfg = Config(media_path=self.root, scan_titles=True,
-                          min_free_margin_bytes=0)
-        h = Harness([fx.ENUMERATION_LINES, fx.DISC_SCAN.splitlines(),
-                     fx.BACKUP_SUCCESS.splitlines()])
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        h = self.scripted(scan=fx.DISC_SCAN)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
 
@@ -356,10 +326,8 @@ class TestTitleScan(RunnerTestCase):
         The volume label is a generic stamp; MakeMKV names the disc anyway,
         and the scan was already fetching it and dropping it on the floor.
         """
-        self.cfg = Config(media_path=self.root, scan_titles=True,
-                          min_free_margin_bytes=0)
-        h = Harness([fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
-                     fx.BACKUP_SUCCESS.splitlines()])
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        h = self.scripted(scan=fx.DVD_SCAN)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
 
@@ -371,10 +339,8 @@ class TestTitleScan(RunnerTestCase):
 
     def test_identification_arrives_before_the_copy_starts(self):
         """An hour into a copy is too late to stop saying "DVD_VIDEO"."""
-        self.cfg = Config(media_path=self.root, scan_titles=True,
-                          min_free_margin_bytes=0)
-        h = Harness([fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
-                     fx.BACKUP_SUCCESS.splitlines()])
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        h = self.scripted(scan=fx.DVD_SCAN)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
 
@@ -386,10 +352,8 @@ class TestTitleScan(RunnerTestCase):
 
     def test_a_disc_with_no_cinfo_is_named_after_its_feature(self):
         """CINFO:2 is not established for DVDs, so there is a fallback."""
-        self.cfg = Config(media_path=self.root, scan_titles=True,
-                          min_free_margin_bytes=0)
-        h = Harness([fx.ENUMERATION_LINES, fx.DVD_SCAN_NO_CINFO.splitlines(),
-                     fx.BACKUP_SUCCESS.splitlines()])
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        h = self.scripted(scan=fx.DVD_SCAN_NO_CINFO)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
 
@@ -398,21 +362,62 @@ class TestTitleScan(RunnerTestCase):
                          "the largest title, not the first one")
         self.assertEqual(identified.disc_type, "")
 
-    def test_scanning_can_be_turned_off(self):
-        h = Harness([fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+
+class TestTitleSelection(RunnerTestCase):
+    """What gets saved, and which discs are handed back to the operator."""
+
+    def test_only_the_feature_is_saved_from_a_film_disc(self):
+        h = self.scripted()
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h)
-        self.assertNotIn(model.SCANNING, h.states)
-        self.assertFalse([e for e in h.events if e.kind == events.IDENTIFIED],
-                         "nothing was scanned, so nothing was identified")
+
+        saving = [a for a in h.argvs if "mkv" in a][0]
+        self.assertIn("--minlength=6159", saving,
+                      "1:42:39, so the 2:32 extras are left behind")
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
+        self.assertEqual(h.final.observation.titles_expected, 1)
+
+    def test_a_disc_hiding_its_feature_among_decoys_is_refused(self):
+        """Playlist obfuscation: dozens of titles all the feature's length.
+
+        There is no way to tell the real one from here, so the disc goes back
+        to the operator rather than being guessed at.
+        """
+        h = self.scripted(scan=fx.DECOY_SCAN)
+        self.run_job(h)
+
+        self.assertEqual(h.final.error_kind, model.ERR_DECOY_TITLES)
+        self.assertIn("by hand", h.final.verdict.reason)
+        self.assertFalse(any("mkv" in a for a in h.argvs),
+                         "and nothing was read off it")
+
+    def test_the_decoy_threshold_is_configurable(self):
+        """A box set of six episodes is not a protected disc."""
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0,
+                          use_stdbuf=False, max_feature_titles=40)
+        h = self.scripted(scan=fx.DECOY_SCAN)
+        h.on_line = lambda proc, line: self.make_output(count=40)
+        self.run_job(h, self.request(cfg=self.cfg))
+        self.assertTrue(any("mkv" in a for a in h.argvs))
+
+    def test_a_disc_with_nothing_worth_saving_is_refused(self):
+        short = "\n".join(
+            [fx.ENUMERATION_LINES[0], "TCOUNT:3"]
+            + [f'TINFO:{i},9,0,"0:03:0{i}"\nTINFO:{i},11,0,"100000"'
+               for i in range(3)])
+        h = self.scripted(scan=short)
+        self.run_job(h)
+
+        self.assertEqual(h.final.error_kind, model.ERR_NO_FEATURE)
+        self.assertIn("10 minutes", h.final.verdict.reason)
 
 
 class TestRobustness(RunnerTestCase):
     def test_a_spawn_failure_is_reported_once(self):
-        h = Harness([fx.ENUMERATION_LINES])
+        h = self.scripted()
 
         def explode(argv):
-            if "backup" in argv:
+            if "mkv" in argv:
                 raise OSError("no such binary")
             return h.__class__.spawn(h, argv)
 
@@ -423,20 +428,20 @@ class TestRobustness(RunnerTestCase):
         self.assertEqual(h.final.error_kind, model.ERR_SPAWN)  # exactly one FINISHED
 
     def test_garbage_output_does_not_kill_the_worker(self):
-        h = Harness([fx.ENUMERATION_LINES,
+        h = Harness([fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
                      ["\x00garbage", "MSG:", "PRGV:a,b,c", 'DRV:"unterminated',
-                      'MSG:5081,0,0,"Backup done.","Backup done."']])
+                      'MSG:5036,260,1,"Copy complete. 1 titles saved.",'
+                      '"Copy complete. %1 titles saved.","1"']])
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h)
         self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
 
     def test_log_is_truncated_rather_than_growing_without_bound(self):
         """A read-error storm can produce an enormous log."""
-        self.cfg = Config(media_path=self.root, scan_titles=False,
-                          min_free_margin_bytes=0, max_log_bytes=200)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, max_log_bytes=200)
         noisy = ['MSG:2003,0,0,"read error at %d","x"' % i for i in range(500)]
         noisy.append('MSG:5081,0,0,"Backup done.","Backup done."')
-        h = Harness([fx.ENUMERATION_LINES, noisy])
+        h = Harness([fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(), noisy])
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
         log = (self.root / "logs" / "attempt-1.log").read_text()

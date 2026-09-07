@@ -138,16 +138,21 @@ TINFO:1,11,0,"323100672"
 # disc's volume label is the generic "DVD_VIDEO"; MakeMKV knows it as "Fresh
 # Horses", which is the whole reason CINFO is worth reading.
 #
-# The CINFO block is hand-built. That run did not log its scan output, so
-# whether a DVD emits CINFO:2 at all is *not* established -- which is exactly
-# why the runner falls back to the feature's own title name. Replace this with
-# a real capture at the first opportunity, and drop the fallback if CINFO:2
-# turns out to be reliable.
+# The CINFO block is a real capture too, taken 2026-09-07 by re-reading the
+# finished ISO with `info iso:...`. It settles what was open when this fixture
+# was first written: a DVD does emit CINFO:2, so the fallback to the feature's
+# title name in _scan_titles is belt-and-braces rather than the only path.
+# CINFO:32 is the raw volume name, which is the whole point -- "DVD_VIDEO"
+# stamped on the disc against "Fresh Horses" that MakeMKV knows it as.
 DVD_SCAN = """\
 MSG:1005,0,1,"MakeMKV v1.18.3 linux(x64-release) started","%1 started","MakeMKV v1.18.3 linux(x64-release)"
-CINFO:1,6209,"DVD disc"
+CINFO:1,6206,"DVD disc"
 CINFO:2,0,"Fresh Horses"
+CINFO:28,0,"eng"
+CINFO:29,0,"English"
+CINFO:30,0,"Fresh Horses"
 CINFO:32,0,"DVD_VIDEO"
+CINFO:33,0,"0"
 TCOUNT:4
 TINFO:0,2,0,"Fresh Horses"
 TINFO:0,9,0,"1:42:39"
@@ -166,3 +171,94 @@ TINFO:3,11,0,"80885760"
 #: The same scan with the disc-level records stripped, for the fallback path.
 DVD_SCAN_NO_CINFO = "\n".join(
     line for line in DVD_SCAN.splitlines() if not line.startswith("CINFO:"))
+
+
+# --- VERBATIM CAPTURE: makemkvcon mkv, 2026-09-07 --------------------------
+# A real run against the finished "Fresh Horses" ISO -- four titles saved in
+# one pass with --minlength. The 275 PRGV records are thinned to a
+# representative few, the empty DRV slots dropped and the destination path
+# made stable; nothing else is edited.
+#
+# This is the first captured completion sequence for an mkv run: 5011, then
+# 5014 announcing the count, then 5005 and 5036 tallying it. 5036 is what
+# outcome.judge treats as success.
+MKV_SUCCESS = """\
+MSG:1005,0,1,"MakeMKV v1.18.3 linux(x64-release) started","%1 started","MakeMKV v1.18.3 linux(x64-release)"
+PRGT:5018,0,"Scanning CD-ROM devices"
+PRGC:5018,0,"Scanning CD-ROM devices"
+PRGV:0,0,65536
+DRV:0,2,999,12,"BD-RE HL-DT-ST BD-RE  WH16NS40 1.05 KLOO6JG4911","HANCOCK","/dev/sr1"
+DRV:1,0,999,0,"BD-RE HL-DT-ST BD-RE BU40N FR07 902HS017569","","/dev/sr0"
+PRGT:3100,0,"Opening DVD disc"
+MSG:3007,0,0,"Using direct disc access mode","Using direct disc access mode"
+PRGC:3102,0,"Processing title sets"
+PRGC:3120,1,"Scanning contents"
+PRGC:3103,0,"Processing titles"
+MSG:3028,0,3,"Title #1 was added (28 cell(s), 1:42:39)","Title #%1 was added (%2 cell(s), %3)","1","28","1:42:39"
+MSG:3028,16777216,3,"Title #2 was added (2 cell(s), 0:02:32)","Title #%1 was added (%2 cell(s), %3)","2","2","0:02:32"
+MSG:3028,16777216,3,"Title #3 was added (2 cell(s), 0:02:32)","Title #%1 was added (%2 cell(s), %3)","3","2","0:02:32"
+MSG:3028,0,3,"Title #4 was added (2 cell(s), 0:02:32)","Title #%1 was added (%2 cell(s), %3)","4","2","0:02:32"
+PRGC:3104,0,"Decrypting data"
+MSG:5011,0,0,"Operation successfully completed","Operation successfully completed"
+PRGT:5024,0,"Saving all titles to MKV files"
+MSG:5014,131072,2,"Saving 4 titles into directory file:///srv/out","Saving %1 titles into directory %2","4","file:///srv/out"
+PRGC:5057,0,"Analyzing seamless segments"
+PRGC:5017,0,"Saving to MKV file"
+PRGV:10749,10078,65536
+PRGV:32287,30271,65536
+PRGV:53109,49793,65536
+PRGC:5057,1,"Analyzing seamless segments"
+PRGC:5017,1,"Saving to MKV file"
+PRGC:5057,2,"Analyzing seamless segments"
+PRGC:5017,2,"Saving to MKV file"
+PRGC:5057,3,"Analyzing seamless segments"
+PRGC:5017,3,"Saving to MKV file"
+PRGV:65536,65536,65536
+MSG:5005,128,1,"4 titles saved","%1 titles saved","4"
+MSG:5036,260,1,"Copy complete. 4 titles saved.","Copy complete. %1 titles saved.","4"
+"""
+
+#: The same run with some titles lost. Hand-built from the 5037/5004 pair,
+#: whose text is decoded from MakeMKV's own catalogue -- see
+#: docs/makemkv/message-codes.md for the recipe.
+MKV_PARTIAL = "\n".join(
+    [line for line in MKV_SUCCESS.splitlines()
+     if not line.startswith(("MSG:5005", "MSG:5036"))]
+    + ['MSG:5003,0,2,"Failed to save title 2 to file B1_t01.mkv",'
+       '"Failed to save title %1 to file %2","2","B1_t01.mkv"',
+       'MSG:5004,128,2,"3 titles saved, 1 failed","%1 titles saved, %2 failed","3","1"',
+       'MSG:5037,260,2,"Copy complete. 3 titles saved, 1 failed.",'
+       '"Copy complete. %1 titles saved, %2 failed.","3","1"'])
+
+#: HAND-BUILT: a disc hiding its feature among decoy playlists. Forty titles
+#: within a few seconds of each other, which is the shape the protection
+#: takes and the shape selection.choose refuses.
+DECOY_SCAN = "\n".join(
+    [ENUMERATION_LINES[0], "TCOUNT:40"]
+    + [f'TINFO:{i},2,0,"Unknown"\nTINFO:{i},9,0,"2:18:{i % 60:02d}"\n'
+       f'TINFO:{i},11,0,"{30_000_000_000 + i}"' for i in range(40)])
+
+#: The same capture with its tallies at one title -- the common case, a film
+#: disc where only the feature is selected. Derived rather than re-captured,
+#: since only the counts differ.
+MKV_SUCCESS_ONE = (
+    MKV_SUCCESS
+    .replace('"4 titles saved","%1 titles saved","4"',
+             '"1 titles saved","%1 titles saved","1"')
+    .replace('"Copy complete. 4 titles saved.","Copy complete. %1 titles saved.","4"',
+             '"Copy complete. 1 titles saved.","Copy complete. %1 titles saved.","1"')
+    .replace('"Saving 4 titles into directory', '"Saving 1 titles into directory'))
+
+# --- HAND-BUILT: mkv runs that go wrong ------------------------------------
+# The read-error lines are lifted verbatim from BACKUP_DIRTY_DISC; the
+# terminal codes are the mkv family, decoded from MakeMKV's own catalogue.
+MKV_DIRTY_DISC = "\n".join(
+    [line for line in BACKUP_DIRTY_DISC.splitlines()
+     if not line.startswith("MSG:5080")]
+    + ['MSG:5003,0,2,"Failed to save title 1 to file A1_t00.mkv",'
+       '"Failed to save title %1 to file %2","1","A1_t00.mkv"',
+       'MSG:5004,128,2,"0 titles saved, 1 failed","%1 titles saved, %2 failed","0","1"'])
+
+MKV_NO_ACCESS = "\n".join(
+    [line for line in BACKUP_NO_ACCESS.splitlines()
+     if not line.startswith("MSG:5080")])

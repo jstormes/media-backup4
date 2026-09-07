@@ -18,7 +18,8 @@ from pathlib import Path
 BDMV = "bdmv"
 VIDEO_TS = "video_ts"
 MIXED = "mixed"
-ISO = "iso"          # a single image file, which is what a DVD backup produces
+MKV = "mkv"          # a directory of .mkv files: what an mkv run produces
+ISO = "iso"          # a single image file, from the old backup-based runs
 UNKNOWN = "unknown"
 MISSING = "missing"
 
@@ -44,6 +45,11 @@ def classify_layout(dest: Path) -> str:
     if not dest.is_dir():
         return MISSING
 
+    # What this project produces now. Checked first: a saved-titles directory
+    # has no BDMV or VIDEO_TS in it and would otherwise read as UNKNOWN.
+    if count_mkv(dest):
+        return MKV
+
     bdmv = dest / "BDMV"
     video_ts = dest / "VIDEO_TS"
 
@@ -59,6 +65,21 @@ def classify_layout(dest: Path) -> str:
     if has_video_ts:
         return VIDEO_TS
     return UNKNOWN
+
+
+def count_mkv(dest: Path) -> int:
+    """How many ``.mkv`` files a saved-titles directory holds.
+
+    Counted rather than merely detected: makemkvcon reports how many titles it
+    saved, and the number of files on disk agreeing with it is the check.
+    """
+    if not dest.is_dir():
+        return 0
+    try:
+        return sum(1 for p in dest.iterdir()
+                   if p.is_file() and p.suffix.lower() == ".mkv")
+    except OSError:
+        return 0
 
 
 def looks_like_iso(path: Path) -> bool:

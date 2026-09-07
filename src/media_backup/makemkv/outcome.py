@@ -34,10 +34,6 @@ class OutcomePolicy:
     size_ratio_floor: float = 0.90
     #: Final total progress must reach this fraction of PRGV's own max.
     progress_floor: float = 0.99
-    #: Accept a complete-looking copy whose directory layout we don't
-    #: recognise. DVD layouts are not yet characterised, and failing every
-    #: unrecognised tree would block the whole DVD collection on day one.
-    allow_unknown_layout: bool = True
 
 
 @dataclass
@@ -54,6 +50,17 @@ class BackupObservation:
     disc_size_bytes: int = 0
     terminated_by_us: bool = False
     stall_reason: str = ""
+    #: How many titles the selection asked for, and how the run answered.
+    titles_expected: int = 0
+    titles_saved: int = 0
+    titles_failed: int = 0
+    #: .mkv files actually on disk. MakeMKV's own count agreeing with this is
+    #: the check; either alone can be wrong.
+    files_written: int = 0
+    #: What the scan said the chosen titles weigh. The yardstick for the
+    #: output, in place of the disc's size -- an MKV run leaves out menus and
+    #: unwanted tracks by design, so the disc size says nothing about it.
+    expected_bytes: int = 0
 
     def saw(self, code: int) -> bool:
         return self.message_codes.get(code, 0) > 0
@@ -71,9 +78,10 @@ class BackupObservation:
 
     @property
     def size_ratio(self) -> float:
-        if self.disc_size_bytes <= 0:
+        """Bytes written against what the chosen titles were said to weigh."""
+        if self.expected_bytes <= 0:
             return 0.0
-        return self.bytes_written / self.disc_size_bytes
+        return self.bytes_written / self.expected_bytes
 
     @property
     def progress_ratio(self) -> float:
@@ -95,7 +103,7 @@ class Verdict:
 
 
 def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdict:
-    """Decide the outcome of a backup run. Pure."""
+    """Decide the outcome of a saved-titles run. Pure."""
     policy = policy or OutcomePolicy()
     detail = {
         "exit_code": obs.exit_code,
@@ -104,7 +112,11 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
         "layout": obs.layout,
         "read_errors": obs.read_error_count,
         "bytes_written": obs.bytes_written,
-        "disc_size_bytes": obs.disc_size_bytes,
+        "expected_bytes": obs.expected_bytes,
+        "titles_expected": obs.titles_expected,
+        "titles_saved": obs.titles_saved,
+        "titles_failed": obs.titles_failed,
+        "files_written": obs.files_written,
     }
 
     # 1. Our own doing. Checked first so a cancel is never reported as a disc
@@ -118,9 +130,9 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
     if obs.exit_code == 1:
         return Verdict(FAILURE, "makemkvcon rejected the command line", detail)
 
-    # 3. A fatal condition during the run. Judged *before* the generic
-    #    "Backup failed." announcement, because MakeMKV prints both: 5080 says
-    #    only that the run died, while the cause code says why. Reporting the
+    # 3. A fatal condition during the run. Judged *before* any generic
+    #    announcement, because MakeMKV prints both: the announcement says only
+    #    that the run died, while the cause code says why. Reporting the
     #    announcement would send the operator to clean a disc over what is
     #    really a cdrom-group problem.
     for code in sorted(obs.message_codes):
@@ -128,50 +140,42 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
             hint = messages.describe(code) or f"fatal MakeMKV error {code}"
             return Verdict(FAILURE, hint, {**detail, "code": code})
 
-    # 4. Explicit terminal failure with no cause code to explain it.
-    if obs.saw_any(messages.FAILURE):
-        return Verdict(FAILURE, "MakeMKV reported: Backup failed", detail)
+    # 4. Nothing on disk at all. A run that said why gets to say why.
+    if obs.files_written == 0:
+        if obs.saw_any(messages.FAILURE):
+            return Verdict(FAILURE, "MakeMKV could not save any title", detail)
+        return Verdict(FAILURE, "no titles were saved", detail)
 
-    # 5. The copy has to have got to the end of the progress bar.
+    # 5. The run has to have got to the end of the progress bar.
     if obs.saw_any_progress and obs.progress_ratio < policy.progress_floor:
         return Verdict(FAILURE,
-                       f"copy stopped at {obs.progress_ratio:.0%} of the disc",
+                       f"stopped at {obs.progress_ratio:.0%} of the disc",
                        detail)
 
-    # 6. And it has to be about as large as the disc it came from. This is the
-    #    check that is independent of everything MakeMKV chose to print.
-    if obs.disc_size_bytes > 0 and obs.size_ratio < policy.size_ratio_floor:
-        return Verdict(FAILURE,
-                       f"only {obs.size_ratio:.0%} of the disc was written",
-                       detail)
-
-    # 7. Nothing on disk at all.
-    if obs.layout == layouts.MISSING:
-        return Verdict(FAILURE, "no output was produced", detail)
-
-    # 8. Copy finished but some files are corrupt. Usually a dirty disc that
-    #    mostly read; the operator decides whether that is good enough.
-    if obs.saw_any(messages.PARTIAL):
-        n = obs.hash_error_count
+    # 6. Fewer titles than were asked for. Not a failure: one lost extra is
+    #    not the same news as a lost feature, and the operator decides which
+    #    this was -- the titles are recorded on the attempt either way.
+    missing = max(0, obs.titles_expected - obs.files_written)
+    if obs.titles_failed or missing or obs.saw_any(messages.PARTIAL):
+        n = obs.titles_failed or missing
         return Verdict(PARTIAL,
-                       f"backup completed but {n or 'some'} file(s) failed the "
-                       "hash check", detail)
+                       f"{obs.files_written} of {obs.titles_expected} title(s) "
+                       f"saved; {n} did not", detail)
 
-    # 9. A well-formed copy with the success message is unambiguous.
-    recognised = obs.layout in (layouts.BDMV, layouts.VIDEO_TS, layouts.MIXED,
-                                layouts.ISO)
-    if obs.saw_any(messages.SUCCESS) and recognised:
-        return Verdict(SUCCESS, "backup completed", detail)
+    # 7. And the files have to be about as big as the scan said those titles
+    #    were. This is the check that is independent of everything MakeMKV
+    #    chose to print.
+    if obs.expected_bytes > 0 and obs.size_ratio < policy.size_ratio_floor:
+        return Verdict(FAILURE,
+                       f"only {obs.size_ratio:.0%} of the expected size was "
+                       f"written", detail)
 
-    # 10. Complete by every measurable standard, but either the success
-    #     message or the layout was not what we expected. Keep it, flag it.
-    if recognised:
-        return Verdict(SUCCESS_UNVERIFIED,
-                       "copy looks complete but MakeMKV printed no completion "
-                       "message", detail)
-    if policy.allow_unknown_layout and obs.saw_any(messages.SUCCESS):
-        return Verdict(SUCCESS_UNVERIFIED,
-                       f"backup completed but the output layout "
-                       f"({obs.layout}) was not recognised", detail)
+    # 8. Every title accounted for, and MakeMKV said so itself.
+    if obs.saw_any(messages.SUCCESS):
+        return Verdict(SUCCESS, "all titles saved", detail)
 
-    return Verdict(FAILURE, "no recognisable disc structure was produced", detail)
+    # 9. Complete by every measurable standard, but MakeMKV never said so.
+    #    Keep it, flag it.
+    return Verdict(SUCCESS_UNVERIFIED,
+                   "the titles are all there, but MakeMKV printed no "
+                   "completion message", detail)

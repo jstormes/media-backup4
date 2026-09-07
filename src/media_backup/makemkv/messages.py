@@ -18,7 +18,24 @@ CANCELLED = 2201             # "Operation was cancelled"
 #: without the trailing full stop. Never treat these as MSG outcomes.
 PROGRESS_TITLE_BACKUP = frozenset({5069, 5070, 5079})
 
+# -- terminal outcome of an mkv run -----------------------------------------
+
+MKV_COMPLETE = 5036          # "Copy complete. %1 titles saved."
+MKV_COMPLETE_PARTIAL = 5037  # "Copy complete. %1 titles saved, %2 failed."
+MKV_SAVED = 5005             # "%1 titles saved"
+MKV_SAVED_PARTIAL = 5004     # "%1 titles saved, %2 failed"
+
+#: The PRGT/PRGC progress-title form. Never treat it as an outcome.
+PROGRESS_TITLE_MKV = frozenset({5017, 5024})
+
 # -- failure causes ---------------------------------------------------------
+
+MKV_TITLE_FAILED = 5003      # "Failed to save title %1 to file %2"
+MKV_BAD_DIRECTORY = 5016     # "Directory %1 is invalid"
+MKV_DECODE_FAILED = 5043     # "Failed to decode AV data of title #%1..."
+TITLE_ADDED = 3028           # "Title #%1 was added (%2 cell(s), %3)"
+OP_COMPLETE = 5011           # "Operation successfully completed"
+
 
 READ_ERROR = 2003            # "Error '%1' occurred while reading '%2' at offset '%3'"
 SCSI_ERROR = 2004
@@ -49,18 +66,20 @@ UPDATE_CHECK_NOTICE = 5074
 # -- sets used by outcome judging -------------------------------------------
 
 #: Terminal success for a backup.
-SUCCESS = frozenset({BACKUP_DONE})
+#: A run that saved every title it was asked for.
+SUCCESS = frozenset({MKV_COMPLETE})
 
-#: Copy completed, but some files are corrupt. Operator decides.
-PARTIAL = frozenset({BACKUP_HASH_FAILED})
+#: Finished, but not with everything. Operator decides whether that is good
+#: enough -- one failed extra is not the same news as a failed feature.
+PARTIAL = frozenset({MKV_COMPLETE_PARTIAL, MKV_SAVED_PARTIAL})
 
-#: Terminal failure for a backup.
-FAILURE = frozenset({BACKUP_FAILED})
+#: MakeMKV said outright that it could not save something.
+FAILURE = frozenset({MKV_TITLE_FAILED, MKV_DECODE_FAILED, BACKUP_FAILED})
 
 #: Fatal during a backup. NOTE: OPEN_FAILED is deliberately absent -- it is
 #: the expected tail of the drive-enumeration idiom. Judge it per invocation.
 FATAL = frozenset({
-    NO_DRIVES, DEST_NOT_EMPTY, NO_DRIVE_ACCESS,
+    NO_DRIVES, DEST_NOT_EMPTY, MKV_BAD_DIRECTORY, NO_DRIVE_ACCESS,
     ERR_UNSPECIFIED, ERR_POSIX, ERR_SCSI, ERR_SCSI_SUB, ERR_INTERNAL,
     FATAL_EXIT, OUT_OF_MEMORY,
 })
@@ -85,6 +104,11 @@ DIAGNOSTIC_HINTS: dict[int, str] = {
         "MakeMKV cannot get full access to the drive. This is a permissions "
         "problem, not a bad disc: the user must be in the 'cdrom' group, or "
         "have write access to the device, or have CAP_SYS_RAWIO."
+    ),
+    MKV_BAD_DIRECTORY: (
+        "MakeMKV would not write into the destination directory. It is "
+        "created empty immediately before the run, so this is a permissions "
+        "or filesystem problem rather than anything about the disc."
     ),
     DEST_NOT_EMPTY: (
         "MakeMKV refused the destination folder, saying it already contains a "

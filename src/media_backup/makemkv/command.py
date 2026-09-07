@@ -42,16 +42,21 @@ def info_argv(cfg, disc_index: int) -> list[str]:
     ]
 
 
-def backup_argv(cfg, disc_index: int, dest: Path) -> list[str]:
-    """Argv that backs one disc up to ``dest``.
+def mkv_argv(cfg, disc_index: int, dest: Path, min_length_seconds: int) -> list[str]:
+    """Argv that saves the chosen titles of one disc into ``dest`` as MKV.
 
-    The source must be ``disc:N``. The binary rejects ``dev:`` outright with
-    ``Backup source must start with "disc:"``, which is why the caller has to
-    resolve a device path to an index immediately before the run.
+    ``all`` with a ``--minlength`` computed from the selection, rather than a
+    list of title ids. One pass over the disc instead of one per title, and it
+    sidesteps title ids entirely -- they are assigned per scan, so a list of
+    them would have to be re-resolved against the very run that uses them.
+
+    The source must be ``disc:N``. The binary rejects ``dev:`` outright, which
+    is why the caller resolves a device path to an index immediately before
+    the run.
     """
     argv = [*_prefix(cfg), "-r", "--progress=-same"]
     if cfg.decrypt:
         argv.append("--decrypt")
-    argv.append(f"--cache={cfg.cache_mb}")
-    argv += ["backup", f"disc:{disc_index}", str(dest)]
+    argv += [f"--minlength={min_length_seconds}", f"--cache={cfg.cache_mb}"]
+    argv += ["mkv", f"disc:{disc_index}", "all", str(dest)]
     return argv

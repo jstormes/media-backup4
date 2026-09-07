@@ -120,8 +120,7 @@ class WindowTestCase(unittest.TestCase):
 
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.cfg = Config(media_path=Path(self._tmp.name), scan_titles=False,
-                          min_free_margin_bytes=0, use_stdbuf=False)
+        self.cfg = Config(media_path=Path(self._tmp.name), min_free_margin_bytes=0, use_stdbuf=False)
         config.ensure_directories(self.cfg)
         self.store = CollectionStore(self.cfg)
         self.seed_store()

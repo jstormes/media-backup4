@@ -29,16 +29,19 @@ from .test_backup_runner import FakeProcess
 DISC_SIZE = 4_556_390_400
 
 
-def make_output(dest: Path, ratio: float = 0.99) -> None:
-    """Write a plausible finished BDMV tree. The stream file is sparse.
+#: What DVD_SCAN says the feature weighs; the default policy picks it alone.
+FEATURE_BYTES = 4_245_336_064
 
-    Judging reads ``st_size`` and never the bytes; materialising a disc-sized
-    buffer would cost gigabytes of RAM to prove nothing.
+
+def make_output(dest: Path, ratio: float = 0.99) -> None:
+    """Write the .mkv a saved-titles run leaves behind. Sparse.
+
+    Judging reads ``st_size`` and counts files, never the bytes; materialising
+    four gigabytes would cost four gigabytes to prove nothing.
     """
-    (dest / "BDMV" / "STREAM").mkdir(parents=True, exist_ok=True)
-    (dest / "BDMV" / "index.bdmv").write_bytes(b"x" * 64)
-    with (dest / "BDMV" / "STREAM" / "00001.m2ts").open("wb") as stream:
-        stream.truncate(max(1, int(DISC_SIZE * ratio) - 64))
+    dest.mkdir(parents=True, exist_ok=True)
+    with (dest / "Fresh Horses-A1_t00.mkv").open("wb") as handle:
+        handle.truncate(max(1, int(FEATURE_BYTES * ratio)))
 
 
 def drive(device=fx.SR1, label=fx.SR1_LABEL, has_media=True, **kw):
@@ -102,8 +105,7 @@ class JobsTestCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
-        self.cfg = Config(media_path=self.root, scan_titles=False,
-                          min_free_margin_bytes=0, use_stdbuf=False,
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, use_stdbuf=False,
                           max_concurrent_jobs=self.max_concurrent_jobs)
         self.store = CollectionStore(self.cfg)
         self.collection = self.store.create(identifier="test-set")
@@ -535,7 +537,7 @@ class PipelineTestCase(JobsTestCase):
 
         def spawn(argv):
             lines = self.transcripts.pop(0) if self.transcripts else []
-            return FakeProcess(lines, 0, on_line if "backup" in argv else None)
+            return FakeProcess(lines, 0, on_line if "mkv" in argv else None)
 
         runner = BackupRunner(request, emit, spawn=spawn,
                               clock=lambda: self.now, ejector=ejector)
@@ -578,7 +580,8 @@ class TestSuccessfulPipeline(PipelineTestCase):
         super().setUp()
         self.disc, self.dev = self.add_disc()
         self.run_one(self.disc, self.dev,
-                     [fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                      fx.MKV_SUCCESS_ONE.splitlines()])
 
     def test_the_disc_ends_up_done(self):
         self.assertEqual(self.disc.state, model.DONE)
@@ -592,7 +595,7 @@ class TestSuccessfulPipeline(PipelineTestCase):
         attempt = self.reload().discs[0].last_attempt
         self.assertEqual(attempt.outcome, outcome.SUCCESS)
         self.assertEqual(attempt.exit_code, 0)
-        self.assertEqual(attempt.layout, "bdmv")
+        self.assertEqual(attempt.layout, "mkv")
         self.assertGreater(attempt.bytes_written, 0)
         self.assertTrue(attempt.eject_ok)
 
@@ -601,13 +604,13 @@ class TestSuccessfulPipeline(PipelineTestCase):
         self.assertEqual(
             attempt.log,
             f"discs/{self.disc.disc_id}/logs/attempt-1.log")
-        self.assertIn("Backup done.",
+        self.assertIn("Copy complete.",
                       (self.store.collection_dir(self.collection)
                        / attempt.log).read_text())
 
     def test_the_copy_landed_where_the_store_says(self):
         data = self.store.data_dir(self.collection, self.disc)
-        self.assertTrue((data / "BDMV" / "index.bdmv").is_file())
+        self.assertEqual([p.suffix for p in data.iterdir()], [".mkv"])
 
     def test_the_disc_was_ejected(self):
         self.assertEqual(len(self.ejects), 1)
@@ -623,7 +626,8 @@ class TestFailureAndRetry(PipelineTestCase):
         disc, dev = self.add_disc()
         self.output_ratio = 0.5
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.BACKUP_DIRTY_DISC.splitlines()])
+                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                      fx.MKV_DIRTY_DISC.splitlines()])
 
         self.assertEqual(disc.state, model.FAILED)
         self.assertEqual(disc.last_attempt.error_kind, model.ERR_COPY)
@@ -634,7 +638,8 @@ class TestFailureAndRetry(PipelineTestCase):
     def test_nothing_is_retried_on_its_own(self):
         disc, dev = self.add_disc()
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.BACKUP_DIRTY_DISC.splitlines()])
+                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                      fx.MKV_DIRTY_DISC.splitlines()])
         self.assertEqual(self.manager.queued_count, 0)
         self.assertEqual(disc.attempt_count, 1)
 
@@ -642,12 +647,14 @@ class TestFailureAndRetry(PipelineTestCase):
         disc, dev = self.add_disc()
         self.output_ratio = 0.5
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.BACKUP_DIRTY_DISC.splitlines()])
+                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                      fx.MKV_DIRTY_DISC.splitlines()])
         self.assertEqual(disc.state, model.FAILED)
 
         self.output_ratio = 0.99
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines()])
+                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                      fx.MKV_SUCCESS_ONE.splitlines()])
 
         reloaded = self.reload().discs[0]
         self.assertEqual(reloaded.state, model.DONE)
@@ -673,8 +680,10 @@ class TestPipelineQueue(PipelineTestCase):
         first, dev = self.add_disc()
         second = self.store.add_disc(self.collection, dev)
         self.transcripts = [
-            fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines(),
-            fx.ENUMERATION_LINES, fx.BACKUP_SUCCESS.splitlines(),
+            fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+            fx.MKV_SUCCESS_ONE.splitlines(),
+            fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+            fx.MKV_SUCCESS_ONE.splitlines(),
         ]
         self.manager.enqueue(self.collection, first, dev)
         self.manager.enqueue(self.collection, second, dev)

@@ -6,7 +6,7 @@ interrupted" at the bottom).
 
 ## Done and green
 
-`/usr/bin/python3 -m unittest discover -s tests -t .` -> **360 tests, OK**.
+`/usr/bin/python3 -m unittest discover -s tests -t .` -> **378 tests, OK**.
 
 Committed already:
 
@@ -310,6 +310,69 @@ Two layout faults turned up on the way and are fixed with it:
   operator can drag the sash. The sash is refitted only when the card list
   itself changes, so a drag survives everything else.
 
+## Switched from `backup` to `mkv` (2026-09-07)
+
+The pipeline now runs ``makemkvcon mkv`` and produces a directory of ``.mkv``
+files. The same shape for both media, which deletes the entire DVD-versus-
+Blu-ray destination problem: ``wants_image``, the ISO layout and the MSG:5068
+trap are all gone, because ``mkv`` is content to find an empty directory
+whatever the disc is.
+
+It is also better instrumented. ``backup`` announced itself with a bare 5081
+and left the rest to size heuristics; ``mkv`` ends with an explicit tally:
+
+| code | meaning |
+| --- | --- |
+| `5036` | Copy complete. N titles saved. |
+| `5037` | Copy complete. N titles saved, **M failed** |
+| `5005` / `5004` | the same counts without the announcement |
+| `5003` | Failed to save title N to file |
+| `5016` | Directory is invalid -- the mkv analogue of 5068 |
+| `5043` | Failed to decode AV data of title N |
+
+Decoded from MakeMKV's own gettext catalogues by the recipe already written
+down in ``docs/makemkv/message-codes.md``. The same lookup settled the code
+left open from the first Blu-ray: **5085 is "Loaded content hash table, will
+verify integrity of M2TS files"**, which is benign.
+
+``judge`` is rebuilt on that. The disc's own size is no longer the yardstick
+-- an MKV run leaves out menus, duplicate angles and unwanted tracks by
+design -- so the run is measured against **the selection**: every chosen title
+present as a file, at about the size the scan said it was, with MakeMKV's own
+count agreeing. Fewer files than asked for is ``PARTIAL``, not failure: one
+lost extra is not the same news as a lost feature, and the operator decides.
+
+### Playlist obfuscation, and refusing to guess
+
+Some Blu-rays carry dozens of decoy playlists all cut to roughly the feature's
+length, precisely so a tool picking "the longest title" picks garbage.
+``makemkv/selection.py`` refuses those discs rather than guessing: past
+``max_feature_titles`` (5) titles of feature length, the disc goes back to the
+operator to do by hand in the MakeMKV GUI.
+
+Feature length is **relative** -- 90% of the longest title -- because that is
+the shape of the protection, and because an absolute threshold misfires on
+ordinary discs. The Blu-ray backed up on 2026-09-06 has one feature at 2:20:05
+and extras running to 14:49, so "anything over ten minutes" would have called
+four titles features. Relative calls one.
+
+The same rule handles a TV disc: four episodes of similar length are four
+features, all saved, and only past five does it read as protection.
+
+**Known limitation.** One threshold does two jobs: it picks what to save *and*
+detects decoys. Lowering ``feature_ratio`` to keep a disc's extras would also
+make ordinary discs look protected. Decoupling them -- a separate floor for
+what to keep -- is a small change if extras turn out to be wanted.
+
+### Verified against real output
+
+The transcript in ``tests/makemkv_fixtures.py`` is a real capture: four titles
+saved from the finished "Fresh Horses" ISO, 275 PRGV records, the whole
+completion sequence. That also closes the note about PRGV cadence being
+uncharacterised. Running ``mkv`` against ``iso:`` and ``file:`` sources works,
+so MKVs can still be made from the two collections already archived in the old
+formats -- nothing reads them any more, but nothing is stranded either.
+
 ## Next steps
 
 Nothing is blocked. In rough order of worth:
@@ -321,8 +384,10 @@ Nothing is blocked. In rough order of worth:
 - **Confirm the finished DVD is judged good.** The copy itself is proven --
   an ISO is being written right now -- but no DVD has yet reached ``judge()``,
   so the ``iso`` layout has not been exercised against a real image.
-- **Look up MSG:5085**, seen on the first successful Blu-ray and not in
-  ``messages.py``.
+- **Run a disc through the mkv path for real.** Every layer is tested against
+  a real transcript, but no disc has yet been read by this pipeline end to
+  end. The HANCOCK Blu-ray in sr1 is the obvious candidate, and a Blu-ray is
+  also the first chance to see whether the decoy rule fires on a real one.
 - **Check the window on a normal-DPI screen.** Everything is derived from
   the font now and the tests are relative to it, but it has only ever been
   looked at on one display.

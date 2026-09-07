@@ -58,8 +58,19 @@ class Config:
     max_concurrent_jobs: int = 0
     #: Headroom required beyond the disc size before a rip may start.
     min_free_margin_bytes: int = 10 * 1024**3
-    #: Fraction of the disc size that must land on disk to count as complete.
+    #: Fraction of the scanned titles' reported size that must land on disk.
+    #: Judged against what the scan said those titles weigh, not against the
+    #: disc: an MKV run leaves out menus, duplicate angles and unwanted
+    #: tracks by design, so the disc's own size says nothing about it.
     size_ratio_floor: float = 0.90
+    #: A title counts as feature-length at this fraction of the longest one.
+    #: See :mod:`makemkv.selection` for why this is relative and not absolute.
+    feature_ratio: float = 0.90
+    #: ...and at least this long outright.
+    min_feature_seconds: int = 600
+    #: More feature-length titles than this means the disc is hiding its
+    #: feature among decoys. Those are left to the operator by hand.
+    max_feature_titles: int = 5
     #: A run with no progress and no messages for this long is wedged. A disc
     #: grinding through read retries still emits MSG:2003, so it is not silent.
     stall_timeout_s: int = 1800
@@ -69,8 +80,6 @@ class Config:
     #: failed Blu-ray attempts is 100+ GB of partial output.
     keep_rejected_attempts: int = 1
     max_log_bytes: int = 50 * 1024**2
-    #: Scan each disc for its title inventory before backing it up.
-    scan_titles: bool = True
 
     # -- derived ------------------------------------------------------------
 
@@ -184,6 +193,10 @@ def validate(cfg: Config) -> list[Problem]:
 
     if not 0.0 < cfg.size_ratio_floor <= 1.0:
         problems.append(Problem(ERROR, "size_ratio_floor must be between 0 and 1"))
+    if not 0.0 < cfg.feature_ratio <= 1.0:
+        problems.append(Problem(ERROR, "feature_ratio must be between 0 and 1"))
+    if cfg.max_feature_titles < 1:
+        problems.append(Problem(ERROR, "max_feature_titles must be at least 1"))
     if cfg.cache_mb < 1:
         problems.append(Problem(ERROR, "cache_mb must be at least 1"))
 

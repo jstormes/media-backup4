@@ -14,8 +14,11 @@
   "stall_timeout_s": 1800,
   "max_job_duration_s": 21600,
 
+  "feature_ratio": 0.90,
+  "min_feature_seconds": 600,
+  "max_feature_titles": 5,
+
   "eject_on_success": true,
   "keep_rejected_attempts": 1,
-  "max_log_bytes": 52428800,
-  "scan_titles": true
+  "max_log_bytes": 52428800
 }
