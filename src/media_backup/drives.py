@@ -88,6 +88,10 @@ class DriveState:
 
     device: str
     model: str
+    #: udisks2 object paths. Needed to call Drive.Eject, which is why they are
+    #: carried on the state rather than discarded after the scan.
+    object_path: str = ""
+    drive_object_path: str = ""
     vendor: str = ""
     serial: str | None = None
     size: int = 0  # bytes; the size of the disc, 0 when the drive is empty
@@ -182,7 +186,8 @@ class DriveScanner:
         return any(str(media).startswith("optical") for media in compat)
 
     @staticmethod
-    def _build_state(block: dict, drive: dict, filesystem: dict | None) -> DriveState:
+    def _build_state(block: dict, drive: dict, filesystem: dict | None,
+                     object_path: str = "") -> DriveState:
         mount_points = [_decode_ay(mp) for mp in (filesystem or {}).get("MountPoints", [])]
         mount_points = [mp for mp in mount_points if mp]
 
@@ -196,6 +201,8 @@ class DriveScanner:
         return DriveState(
             device=_decode_ay(block.get("Device")),
             model=str(drive.get("Model") or "").strip() or "Unknown",
+            object_path=object_path,
+            drive_object_path=str(block.get("Drive") or ""),
             vendor=str(drive.get("Vendor") or "").strip(),
             serial=str(drive.get("Serial") or "").strip() or None,
             size=int(block.get("Size") or drive.get("Size") or 0),
@@ -227,14 +234,15 @@ class DriveScanner:
         }
 
         states: list[DriveState] = []
-        for ifaces in objects.values():
+        for path, ifaces in objects.items():
             block = ifaces.get(IFACE_BLOCK)
             if block is None or IFACE_PARTITION in ifaces:
                 continue
             drive = drives_by_path.get(block.get("Drive", ""))
             if drive is None or not cls._is_optical(drive):
                 continue
-            states.append(cls._build_state(block, drive, ifaces.get(IFACE_FILESYSTEM)))
+            states.append(cls._build_state(
+                block, drive, ifaces.get(IFACE_FILESYSTEM), path))
 
         return sorted(states, key=lambda d: d.device)
 

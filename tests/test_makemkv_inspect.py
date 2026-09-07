@@ -84,22 +84,5 @@ class TestTreeSize(LayoutTestCase):
         self.assertEqual(insp.tree_size(self.dest), before)
 
 
-class TestIsEmpty(LayoutTestCase):
-    def test_absent_counts_as_empty(self):
-        self.assertTrue(insp.is_empty(self.dest / "nope"))
-
-    def test_new_directory(self):
-        self.assertTrue(insp.is_empty(self.dest))
-
-    def test_directory_with_content(self):
-        """makemkvcon refuses a non-empty destination (MSG:5068)."""
-        self.make_bdmv()
-        self.assertFalse(insp.is_empty(self.dest))
-
-    def test_a_single_hidden_file_still_counts_as_non_empty(self):
-        (self.dest / ".hidden").write_text("x")
-        self.assertFalse(insp.is_empty(self.dest))
-
-
 if __name__ == "__main__":
     unittest.main()

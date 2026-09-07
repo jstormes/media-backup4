@@ -87,9 +87,12 @@ DIAGNOSTIC_HINTS: dict[int, str] = {
         "have write access to the device, or have CAP_SYS_RAWIO."
     ),
     DEST_NOT_EMPTY: (
-        "The destination directory already contains a backup. MakeMKV refuses "
-        "to write into it. This is a bug in this application, not an operator "
-        "error -- the directory must be cleared before the run."
+        "MakeMKV refused the destination folder, saying it already contains a "
+        "backup. Take that reason with salt: the folder is created empty and "
+        "checked empty immediately before the run, and it has been seen firing "
+        "on a folder that was provably untouched. Observed on a DVD while a "
+        "Blu-ray backup into the same tree ran fine, so read it as \"MakeMKV "
+        "would not start\" and look at the attempt log for the real cause."
     ),
     NO_DRIVES: "MakeMKV found no usable optical drives.",
     OUT_OF_MEMORY: "MakeMKV ran out of memory.",

@@ -184,6 +184,22 @@ class Tcount:
     count: int
 
 
+#: makemkvcon attribute ids (its own ``AP_ItemAttributeId``), shared by the
+#: CINFO, TINFO and SINFO records -- the id means the same thing whether it is
+#: describing a disc, a title or a stream.
+ATTR_TYPE = 1              # "Blu-ray disc", "DVD disc"
+ATTR_NAME = 2
+ATTR_LANG_CODE = 3
+ATTR_CHAPTER_COUNT = 8
+ATTR_DURATION = 9
+ATTR_SIZE_HUMAN = 10       # "29.3 GB"
+ATTR_SIZE_BYTES = 11
+ATTR_SOURCE_FILE = 16      # "00001.mpls"; DVDs do not emit this
+ATTR_VIDEO_SIZE = 19       # "1920x1080"
+ATTR_METADATA_LANG = 28
+ATTR_VOLUME_NAME = 32      # the raw volume label, e.g. "DVD_VIDEO"
+
+
 @dataclass(frozen=True)
 class Cinfo:
     """``CINFO:id,code,"value"`` -- a disc-level attribute."""

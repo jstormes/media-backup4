@@ -5,7 +5,8 @@ Layout under ``media_path``::
     collections/<collection-uuid>/
         collection.json          (+ .bak)
         discs/<disc-uuid>/
-            data/                BDMV/... or VIDEO_TS/...
+            data/                BDMV/... -- a Blu-ray
+            data.iso             -- or a DVD, which backs up as an image
             logs/attempt-1.log
             rejected/attempt-1/
     finished/<collection-uuid>/.complete
@@ -33,6 +34,11 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
+#: udisks2 ``Drive.Media`` prefix for the one media class ``makemkvcon
+#: backup`` writes as a directory tree. Everything else it writes as a single
+#: image file, so everything else gets a destination path that must not exist.
+TREE_MEDIA_PREFIX = "optical_bd"
+
 COLLECTION_FILE = "collection.json"
 BACKUP_FILE = "collection.json.bak"
 TEMP_FILE = "collection.json.tmp"
@@ -57,8 +63,27 @@ class CollectionStore:
     def disc_dir(self, collection: model.Collection, disc: model.Disc) -> Path:
         return self.collection_dir(collection) / "discs" / disc.disc_id
 
+    @staticmethod
+    def wants_image(disc: model.Disc) -> bool:
+        """True when this disc backs up to an image file rather than a tree.
+
+        ``makemkvcon backup`` writes a ``BDMV/`` directory for a Blu-ray and a
+        single decrypted ISO for a DVD, and it will not be talked out of
+        either. Handed a directory where it wanted to create a file it answers
+        MSG:5068, "already contains a backup" -- a message about a situation
+        that is not happening, which is what made this cost a real backup and
+        four experiments to find on 2026-09-06.
+
+        Unknown media is treated as an image. That is the safe way round: a
+        wrong guess here fails immediately and says so, where the other
+        direction is the one that produced the misleading 5068.
+        """
+        return not (disc.media or "").startswith(TREE_MEDIA_PREFIX)
+
     def data_dir(self, collection: model.Collection, disc: model.Disc) -> Path:
-        return self.disc_dir(collection, disc) / "data"
+        """Where makemkvcon writes this disc: ``data/`` or ``data.iso``."""
+        name = "data.iso" if self.wants_image(disc) else "data"
+        return self.disc_dir(collection, disc) / name
 
     def log_path(self, collection, disc, attempt: int) -> Path:
         return self.disc_dir(collection, disc) / "logs" / f"attempt-{attempt}.log"
@@ -171,27 +196,40 @@ class CollectionStore:
     def prepare_attempt(self, collection: model.Collection, disc: model.Disc) -> tuple[Path, Path, int]:
         """Clear the way for a new attempt; return (data_dir, log_path, n).
 
-        makemkvcon refuses to write into a directory that already contains a
-        backup (MSG:5068), so any previous partial output has to be moved out
-        of the way here. It is moved rather than deleted -- a half-copied disc
-        is evidence about why it failed.
+        The destination is shaped to suit the disc, because makemkvcon will
+        not be talked out of what it wants (see :meth:`wants_image`):
 
-        Moving lazily, at retry time rather than at failure time, means an
-        operator who never retries still finds the partial under ``data/``
-        where they would look for it.
+        * Blu-ray -- ``data/``, created here and empty. makemkvcon is content
+          to find it already there.
+        * DVD -- ``data.iso``, which is **not** created and must not exist.
+          makemkvcon writes the image itself and refuses a path that is
+          already taken.
+
+        Any previous partial output is moved out of the way rather than
+        deleted -- a half-copied disc is evidence about why it failed. Moving
+        lazily, at retry time rather than at failure time, means an operator
+        who never retries still finds the partial where they would look for it.
         """
         attempt = disc.attempt_count + 1
         data = self.data_dir(collection, disc)
         log = self.log_path(collection, disc, attempt)
         log.parent.mkdir(parents=True, exist_ok=True)
 
-        if data.exists() and any(data.iterdir()):
+        wants_image = self.wants_image(disc)
+
+        if data.exists() and (data.is_file() or any(data.iterdir())):
             reject = self.reject_dir(collection, disc, attempt - 1 or 1)
             reject.parent.mkdir(parents=True, exist_ok=True)
             if reject.exists():
                 shutil.rmtree(reject, ignore_errors=True)
             try:
-                os.replace(data, reject)
+                if wants_image:
+                    # An image is a file, and everything that reads the
+                    # rejected/ tree expects directories. Park it inside one.
+                    reject.mkdir(parents=True)
+                    os.replace(data, reject / data.name)
+                else:
+                    os.replace(data, reject)
             except OSError as exc:
                 raise StoreError(
                     f"could not move the previous partial copy aside: {exc}") from exc
@@ -199,7 +237,20 @@ class CollectionStore:
                 disc.attempts[-1].rejected_path = self.relative(collection, reject)
             self._prune_rejected(collection, disc)
 
-        data.mkdir(parents=True, exist_ok=True)
+        data.parent.mkdir(parents=True, exist_ok=True)
+        if wants_image:
+            # Must not exist at all: makemkvcon creates the image itself.
+            # Only an empty directory can still be here -- a file or a
+            # non-empty directory was moved aside above -- so rmdir is both
+            # sufficient and safe.
+            if data.exists():
+                try:
+                    data.rmdir()
+                except OSError as exc:
+                    raise StoreError(
+                        f"could not clear the destination {data}: {exc}") from exc
+        else:
+            data.mkdir(exist_ok=True)
         return data, log, attempt
 
     def _prune_rejected(self, collection: model.Collection, disc: model.Disc) -> None:

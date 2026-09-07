@@ -80,10 +80,17 @@ class TestFailure(unittest.TestCase):
         self.assertIn("permissions", v.reason)
         self.assertNotIn("clean", v.reason.lower())
 
-    def test_destination_not_empty_is_flagged_as_our_bug(self):
+    def test_destination_refused_does_not_blame_a_full_directory(self):
+        """5068 has been seen on a provably empty directory (2026-09-06).
+
+        The hint used to assert the directory needed clearing and that it was
+        our bug. It sent a real diagnosis down the wrong path: the directory
+        had been empty since the millisecond it was created.
+        """
         v = judge(obs(message_codes={m.DEST_NOT_EMPTY: 1}))
         self.assertEqual(v.outcome, FAILURE)
-        self.assertIn("bug in this application", v.reason)
+        self.assertIn("MakeMKV would not start", v.reason)
+        self.assertIn("with salt", v.reason)
 
 
 class TestPartial(unittest.TestCase):

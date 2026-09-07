@@ -130,3 +130,39 @@ SINFO:0,0,19,0,"1920x1080"
 TINFO:1,2,0,"Extras, Part 2"
 TINFO:1,11,0,"323100672"
 """
+
+
+# --- RECONSTRUCTED FROM A REAL RUN: a DVD scan -----------------------------
+# The title names, durations and sizes are verbatim from what MakeMKV returned
+# for /dev/sr0 on 2026-09-06, recovered from that disc's collection.json. The
+# disc's volume label is the generic "DVD_VIDEO"; MakeMKV knows it as "Fresh
+# Horses", which is the whole reason CINFO is worth reading.
+#
+# The CINFO block is hand-built. That run did not log its scan output, so
+# whether a DVD emits CINFO:2 at all is *not* established -- which is exactly
+# why the runner falls back to the feature's own title name. Replace this with
+# a real capture at the first opportunity, and drop the fallback if CINFO:2
+# turns out to be reliable.
+DVD_SCAN = """\
+MSG:1005,0,1,"MakeMKV v1.18.3 linux(x64-release) started","%1 started","MakeMKV v1.18.3 linux(x64-release)"
+CINFO:1,6209,"DVD disc"
+CINFO:2,0,"Fresh Horses"
+CINFO:32,0,"DVD_VIDEO"
+TCOUNT:4
+TINFO:0,2,0,"Fresh Horses"
+TINFO:0,9,0,"1:42:39"
+TINFO:0,11,0,"4245336064"
+TINFO:1,2,0,"Fresh Horses"
+TINFO:1,9,0,"0:02:32"
+TINFO:1,11,0,"99866624"
+TINFO:2,2,0,"Fresh Horses"
+TINFO:2,9,0,"0:02:32"
+TINFO:2,11,0,"101634048"
+TINFO:3,2,0,"Fresh Horses"
+TINFO:3,9,0,"0:02:32"
+TINFO:3,11,0,"80885760"
+"""
+
+#: The same scan with the disc-level records stripped, for the fallback path.
+DVD_SCAN_NO_CINFO = "\n".join(
+    line for line in DVD_SCAN.splitlines() if not line.startswith("CINFO:"))

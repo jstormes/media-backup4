@@ -52,6 +52,8 @@ ERR_RESOLVE = "resolve_failed"
 ERR_SPAWN = "spawn_failed"
 ERR_UNKILLABLE = "unkillable"
 ERR_COPY = "copy_failed"
+#: The job never started: the store could not clear the way for it.
+ERR_STORE = "store_failed"
 
 
 def now() -> str:
@@ -158,8 +160,27 @@ class Disc:
         return self.state == DONE
 
     @property
+    def main_title(self) -> "Title | None":
+        """The feature, as opposed to the trailers and the menu loops.
+
+        The largest title, not the longest-named one: a DVD's extras are a
+        couple of hundred megabytes against the feature's several gigabytes,
+        and size is an integer where duration is a string.
+        """
+        return max(self.titles, key=lambda t: t.size_bytes, default=None)
+
+    @property
     def display_name(self) -> str:
-        return self.label or self.makemkv_disc_name or f"Disc {self.ordinal}"
+        """What to call this disc on screen.
+
+        MakeMKV's name wins over the volume label. The label is whatever was
+        stamped on the disc, which for a DVD is very often the generic
+        ``DVD_VIDEO``, while MakeMKV knows it as "Fresh Horses". Even where
+        both are meaningful MakeMKV's is the better written one -- proper case
+        and punctuation against ``SPIDER_MAN_ACROSS_SPIDER_VERSE``.
+        """
+        return (self.makemkv_disc_name or self.label
+                or f"Disc {self.ordinal}")
 
     def to_dict(self) -> dict:
         data = asdict(self)

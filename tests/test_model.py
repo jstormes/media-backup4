@@ -67,6 +67,26 @@ class TestDisc(unittest.TestCase):
         self.assertEqual(Disc(makemkv_disc_name="MK").display_name, "MK")
         self.assertEqual(Disc(ordinal=3).display_name, "Disc 3")
 
+    def test_makemkv_name_beats_the_volume_label(self):
+        """A DVD's label is very often a generic stamp; MakeMKV knows better.
+
+        Real disc, 2026-09-06: the label reads DVD_VIDEO and MakeMKV reads
+        "Fresh Horses".
+        """
+        disc = Disc(label="DVD_VIDEO", makemkv_disc_name="Fresh Horses")
+        self.assertEqual(disc.display_name, "Fresh Horses")
+
+    def test_main_title_is_the_biggest_not_the_first(self):
+        """Trailers come first on plenty of discs."""
+        disc = Disc(titles=[
+            Title(index=0, name="Trailer", duration="0:02:32", size_bytes=99_866_624),
+            Title(index=1, name="Feature", duration="1:42:39", size_bytes=4_245_336_064),
+        ])
+        self.assertEqual(disc.main_title.name, "Feature")
+
+    def test_main_title_of_an_unscanned_disc_is_nothing(self):
+        self.assertIsNone(Disc().main_title)
+
 
 class TestCollection(unittest.TestCase):
     def test_ordinals_increment(self):

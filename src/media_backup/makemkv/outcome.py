@@ -118,15 +118,19 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
     if obs.exit_code == 1:
         return Verdict(FAILURE, "makemkvcon rejected the command line", detail)
 
-    # 3. Explicit terminal failure.
-    if obs.saw_any(messages.FAILURE):
-        return Verdict(FAILURE, "MakeMKV reported: Backup failed", detail)
-
-    # 4. A fatal condition during the run.
+    # 3. A fatal condition during the run. Judged *before* the generic
+    #    "Backup failed." announcement, because MakeMKV prints both: 5080 says
+    #    only that the run died, while the cause code says why. Reporting the
+    #    announcement would send the operator to clean a disc over what is
+    #    really a cdrom-group problem.
     for code in sorted(obs.message_codes):
         if code in messages.FATAL:
             hint = messages.describe(code) or f"fatal MakeMKV error {code}"
             return Verdict(FAILURE, hint, {**detail, "code": code})
+
+    # 4. Explicit terminal failure with no cause code to explain it.
+    if obs.saw_any(messages.FAILURE):
+        return Verdict(FAILURE, "MakeMKV reported: Backup failed", detail)
 
     # 5. The copy has to have got to the end of the progress bar.
     if obs.saw_any_progress and obs.progress_ratio < policy.progress_floor:
@@ -143,7 +147,7 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
 
     # 7. Nothing on disk at all.
     if obs.layout == layouts.MISSING:
-        return Verdict(FAILURE, "no output directory was produced", detail)
+        return Verdict(FAILURE, "no output was produced", detail)
 
     # 8. Copy finished but some files are corrupt. Usually a dirty disc that
     #    mostly read; the operator decides whether that is good enough.
@@ -154,7 +158,8 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
                        "hash check", detail)
 
     # 9. A well-formed copy with the success message is unambiguous.
-    recognised = obs.layout in (layouts.BDMV, layouts.VIDEO_TS, layouts.MIXED)
+    recognised = obs.layout in (layouts.BDMV, layouts.VIDEO_TS, layouts.MIXED,
+                                layouts.ISO)
     if obs.saw_any(messages.SUCCESS) and recognised:
         return Verdict(SUCCESS, "backup completed", detail)
 
