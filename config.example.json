@@ -11,6 +11,7 @@
   "max_concurrent_jobs": 0,
   "min_free_margin_bytes": 10737418240,
   "size_ratio_floor": 0.90,
+  "size_ratio_ceiling": 1.5,
   "stall_timeout_s": 1800,
   "max_job_duration_s": 21600,
 

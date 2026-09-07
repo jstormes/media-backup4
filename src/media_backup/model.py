@@ -94,6 +94,11 @@ class Title:
     designator: str = ""
     #: The file this title actually became, filled in after the run.
     output_file: str = ""
+    #: How many streams the scan found on this title. A disc can offer the
+    #: same footage twice with different track sets -- Hancock's feature comes
+    #: as 23 streams and as 15 -- so this is what tells the richer from the
+    #: poorer when the clip lists are identical.
+    streams: int = 0
 
     @property
     def seconds(self) -> int:

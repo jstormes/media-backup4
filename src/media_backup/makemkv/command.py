@@ -42,13 +42,18 @@ def info_argv(cfg, disc_index: int) -> list[str]:
     ]
 
 
-def mkv_argv(cfg, disc_index: int, dest: Path, min_length_seconds: int) -> list[str]:
-    """Argv that saves the chosen titles of one disc into ``dest`` as MKV.
+def mkv_argv(cfg, disc_index: int, dest: Path, title_id: int) -> list[str]:
+    """Argv that saves **one** title of a disc into ``dest`` as MKV.
 
-    ``all`` with a ``--minlength`` computed from the selection, rather than a
-    list of title ids. One pass over the disc instead of one per title, and it
-    sidesteps title ids entirely -- they are assigned per scan, so a list of
-    them would have to be re-resolved against the very run that uses them.
+    One title per invocation. The alternative -- ``all`` with a ``--minlength``
+    computed from the selection -- cannot express "these two of the four", and
+    a length filter cannot separate a title from another of the same runtime.
+    Hancock offers its feature twice and that cost 88 GB where the film is 44,
+    measured 2026-09-07.
+
+    No ``--minlength`` here, deliberately: a title id is a position in the list
+    MakeMKV is showing, so the save has to see the same list the scan did, and
+    the scan does not pass one either.
 
     The source must be ``disc:N``. The binary rejects ``dev:`` outright, which
     is why the caller resolves a device path to an index immediately before
@@ -63,6 +68,6 @@ def mkv_argv(cfg, disc_index: int, dest: Path, min_length_seconds: int) -> list[
     argv = [*_prefix(cfg), "-r", "--progress=-same"]
     if cfg.decrypt:
         argv.append("--decrypt")
-    argv += [f"--minlength={min_length_seconds}", f"--cache={cfg.cache_mb}"]
-    argv += ["mkv", f"disc:{disc_index}", "all", str(dest)]
+    argv.append(f"--cache={cfg.cache_mb}")
+    argv += ["mkv", f"disc:{disc_index}", str(title_id), str(dest)]
     return argv

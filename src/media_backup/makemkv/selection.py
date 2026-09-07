@@ -61,9 +61,6 @@ class Selection:
     titles: tuple = ()
     reason: str = ""
     error_kind: str = ""
-    #: Passed to ``--minlength`` so a single ``mkv ... all`` pass saves
-    #: exactly these titles. One pass means one read of the disc.
-    min_length_seconds: int = 0
     #: Everything that could have been the feature. Carried whether or not a
     #: decision was reached, because when one was not this is the list the
     #: operator needs in front of them.
@@ -124,25 +121,38 @@ def is_degenerate(title) -> bool:
 
 
 def distinct(titles) -> list:
-    """Drop titles that are the same content authored more than once.
+    """Keep one title per distinct clip list -- the best-equipped one.
 
-    Blu-rays routinely carry a playlist twice, differing only in a subpath.
-    Hancock offers four feature-length titles that are two films: a theatrical
-    cut and an extended cut, each authored twice with identical clip lists.
-    Saving all four writes every frame twice.
+    Blu-rays routinely carry a playlist twice. Hancock offers four
+    feature-length titles that are two films: a theatrical cut and an extended
+    cut, each authored twice with identical clip lists.
+
+    The copies are not interchangeable, which is the part worth knowing. Same
+    footage, same runtime to the frame, same seven audio tracks -- and fifteen
+    subtitle tracks against seven. Keeping whichever came first would have
+    filed the version missing eight subtitle languages about half the time, so
+    the tie-break is the stream count and the richer one wins.
 
     Deduplicated *before* the decoy count, or three cuts authored in pairs
     would read as six features and be refused.
     """
-    seen, out = set(), []
+    best: dict[str, object] = {}
+    unkeyed = []
     for title in titles:
         key = title.segments
-        if key and key in seen:
+        if not key:
+            unkeyed.append(title)
             continue
-        if key:
-            seen.add(key)
-        out.append(title)
-    return out
+        held = best.get(key)
+        if held is None or title.streams > held.streams:
+            best[key] = title
+    return _in_original_order(titles, list(best.values()) + unkeyed)
+
+
+def _in_original_order(titles, kept):
+    """Preserve the scan's order; the tie-break must not reshuffle the list."""
+    keep = {id(t) for t in kept}
+    return [t for t in titles if id(t) in keep]
 
 
 def describe(titles, limit: int = 8) -> str:
@@ -240,8 +250,7 @@ def choose(titles, policy: SelectionPolicy | None = None) -> Selection:
                     f"candidates are:\n{listing}"),
             error_kind=model.ERR_AMBIGUOUS_TITLES)
 
-    return Selection(True, tuple(features), candidates=tuple(features),
-                     min_length_seconds=min(t.seconds for t in features))
+    return Selection(True, tuple(features), candidates=tuple(features))
 
 
 # -- what the titles are to each other --------------------------------------

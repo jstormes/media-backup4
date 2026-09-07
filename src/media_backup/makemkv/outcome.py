@@ -34,6 +34,10 @@ class OutcomePolicy:
     size_ratio_floor: float = 0.90
     #: Final total progress must reach this fraction of PRGV's own max.
     progress_floor: float = 0.99
+    #: ...and must not overshoot this multiple of it. A floor alone accepts a
+    #: run that saved something twice as readily as one that got it right:
+    #: Hancock wrote 88 GB where the film is 44 and passed at a ratio of 2.0.
+    size_ratio_ceiling: float = 1.5
 
 
 @dataclass
@@ -170,12 +174,21 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
                        f"only {obs.size_ratio:.0%} of the expected size was "
                        f"written", detail)
 
-    # 8. Every title accounted for, and MakeMKV said so itself.
+    # 8. More on disk than those titles were said to weigh means something
+    #    was saved more than once. Every byte asked for is present, so this is
+    #    kept and flagged rather than failed -- but it is not passed silently,
+    #    which is what a floor on its own does.
+    if obs.expected_bytes > 0 and obs.size_ratio > policy.size_ratio_ceiling:
+        return Verdict(SUCCESS_UNVERIFIED,
+                       f"wrote {obs.size_ratio:.0%} of what these titles "
+                       f"weigh, so something was saved more than once", detail)
+
+    # 9. Every title accounted for, and MakeMKV said so itself.
     if obs.saw_any(messages.SUCCESS):
         return Verdict(SUCCESS, "all titles saved", detail)
 
-    # 9. Complete by every measurable standard, but MakeMKV never said so.
-    #    Keep it, flag it.
+    # 10. Complete by every measurable standard, but MakeMKV never said so.
+    #     Keep it, flag it.
     return Verdict(SUCCESS_UNVERIFIED,
                    "the titles are all there, but MakeMKV printed no "
                    "completion message", detail)

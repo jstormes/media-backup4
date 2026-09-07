@@ -34,8 +34,8 @@ from .outcome import BackupObservation, OutcomePolicy, Verdict, judge
 from .records import (ATTR_CHAPTER_COUNT, ATTR_COMMENT, ATTR_DURATION,
                       ATTR_NAME, ATTR_OUTPUT_FILE, ATTR_SEGMENTS_MAP,
                       ATTR_SIZE_BYTES, ATTR_SOURCE_FILE, ATTR_TYPE,
-                      Cinfo, Msg, Prgc, Prgt, Prgv, Tcount, Tinfo,
-                      parse_line)
+                      Cinfo, Msg, Prgc, Prgt, Prgv, Sinfo, Tcount,
+                      Tinfo, parse_line)
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,8 @@ class BackupRunner:
         self._clock = clock
         self._ejector = ejector
         self._policy = policy or OutcomePolicy(
-            size_ratio_floor=request.cfg.size_ratio_floor)
+            size_ratio_floor=request.cfg.size_ratio_floor,
+            size_ratio_ceiling=request.cfg.size_ratio_ceiling)
         self._selection_policy = selection.SelectionPolicy(
             feature_ratio=request.cfg.feature_ratio,
             min_feature_seconds=request.cfg.min_feature_seconds,
@@ -193,6 +194,13 @@ class BackupRunner:
         self._titles: list[model.Title] = []
         self._disc_name = ""
         self._disc_type = ""
+        #: Where the run is in its list of titles, for scaling progress: each
+        #: makemkvcon run reports its own 0-100%, and the operator wants one
+        #: bar for the job.
+        self._titles_done = 0
+        self._titles_total = 1
+        self._log_written = 0
+        self._log_truncated = False
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -296,9 +304,9 @@ class BackupRunner:
         if not chosen:
             self._fail(chosen.reason, chosen.error_kind)
             return
-        logger.info("job %s: saving %d of %d title(s), minlength %ds",
+        logger.info("job %s: saving %d of %d title(s): %s",
                     req.job_id, len(chosen.titles), len(self._titles),
-                    chosen.min_length_seconds)
+                    ", ".join(t.source or str(t.index) for t in chosen.titles))
 
         # 6. The copy itself.
         self._state(model.COPYING, "copying")
@@ -359,8 +367,12 @@ class BackupRunner:
         """
         argv = command.info_argv(self.request.cfg, index)
         current: dict[int, model.Title] = {}
+        streams: dict[int, set[int]] = {}
         for line in self._run_to_completion(argv):
             record = parse_line(line)
+            if isinstance(record, Sinfo):
+                streams.setdefault(record.title, set()).add(record.stream)
+                continue
             if isinstance(record, Cinfo):
                 if record.id == ATTR_NAME:
                     self._disc_name = record.value
@@ -392,6 +404,8 @@ class BackupRunner:
                     title.chapters = int(record.value)
                 except ValueError:
                     pass
+        for index_, title in current.items():
+            title.streams = len(streams.get(index_, ()))
         self._titles = [current[k] for k in sorted(current)]
 
         if not self._disc_name and self._titles:
@@ -408,49 +422,79 @@ class BackupRunner:
             titles=tuple(self._titles)))
 
     def _save_titles(self, index: int, chosen: selection.Selection) -> BackupObservation:
+        """Save each chosen title, one makemkvcon run apiece.
+
+        One run per title rather than one ``all`` pass: a length filter cannot
+        say "these two of the four", and cannot separate a title from another
+        of the same runtime at all. It also reads less, not more -- the pass
+        that wrote Hancock twice read the disc twice over to do it.
+        """
         req = self.request
-        argv = command.mkv_argv(req.cfg, index, req.dest,
-                                chosen.min_length_seconds)
         obs = BackupObservation(disc_size_bytes=req.disc_size_bytes)
+        started = self._clock()
+        self._last_activity_at = started
+        self._log_written = 0
+        self._log_truncated = False
+        self._titles_done = 0
+        self._titles_total = max(1, len(chosen.titles))
+        codes: list[int] = []
+
+        req.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with req.log_path.open("w", errors="replace") as log:
+            for position, title in enumerate(chosen.titles):
+                if self._cancelled.is_set():
+                    break
+                self._titles_done = position
+                codes.append(self._save_one(index, title, obs, log, started))
+
+        # The first thing to go wrong is the thing to report. A later run
+        # exiting 0 does not undo an earlier one that did not.
+        obs.exit_code = next((c for c in codes if c), 0) if codes else None
+        obs.terminated_by_us = self._cancelled.is_set()
+        if obs.terminated_by_us and not obs.stall_reason:
+            obs.stall_reason = self._cancel_reason or "cancelled"
+        return obs
+
+    def _save_one(self, index: int, title: model.Title,
+                  obs: BackupObservation, log, started: float) -> int:
+        req = self.request
+        argv = command.mkv_argv(req.cfg, index, req.dest, title.index)
 
         try:
             process = self._spawn(argv)
         except OSError as exc:
-            obs.exit_code = None
             self._fail(f"could not start makemkvcon: {exc}", model.ERR_SPAWN, obs)
             raise _Aborted from exc
 
         with self._process_lock:
             self._process = process
 
-        started = self._clock()
-        self._last_activity_at = started
-        log_budget = req.cfg.max_log_bytes
-        written = 0
-        truncated = False
+        log.write(f"# title {title.index} ({title.source or title.duration})\n")
+        self._log(log, "# " + " ".join(argv) + "\n")
+        for line in process.lines():
+            self._log(log, line)
+            self._consume(line, obs)
+            self._check_watchdogs(obs, started)
 
-        req.log_path.parent.mkdir(parents=True, exist_ok=True)
-        with req.log_path.open("w", errors="replace") as log:
-            log.write("# " + " ".join(argv) + "\n")
-            for line in process.lines():
-                if written < log_budget:
-                    log.write(line)
-                    written += len(line)
-                elif not truncated:
-                    truncated = True
-                    log.write("\n# ... log truncated at "
-                              f"{log_budget} bytes ...\n")
-                self._consume(line, obs)
-                self._check_watchdogs(obs, started)
-
-        obs.exit_code = process.wait()
-        obs.terminated_by_us = self._cancelled.is_set()
-        if obs.terminated_by_us and not obs.stall_reason:
-            obs.stall_reason = self._cancel_reason or "cancelled"
-
+        code = process.wait()
         with self._process_lock:
             self._process = None
-        return obs
+        return code
+
+    def _log(self, log, line: str) -> None:
+        """Append to the attempt log, up to the configured budget.
+
+        The budget spans the whole attempt, not each title: a read-error storm
+        on the first of four titles must not buy the other three a fresh
+        allowance apiece.
+        """
+        budget = self.request.cfg.max_log_bytes
+        if self._log_written < budget:
+            log.write(line)
+            self._log_written += len(line)
+        elif not self._log_truncated:
+            self._log_truncated = True
+            log.write(f"\n# ... log truncated at {budget} bytes ...\n")
 
     def _consume(self, line: str, obs: BackupObservation) -> None:
         record = parse_line(line)
@@ -486,9 +530,12 @@ class BackupRunner:
         if not final and now - self._last_progress_at < PROGRESS_INTERVAL_S:
             return
         self._last_progress_at = now
+        # Each run reports its own progress; the bar is for the whole job.
+        overall = ((self._titles_done + record.total_pct / 100.0)
+                   / self._titles_total * 100.0)
         self._emit(events.JobEvent(
             self.request.job_id, events.PROGRESS,
-            total_pct=record.total_pct, step_pct=record.step_pct,
+            total_pct=overall, step_pct=record.step_pct,
         ))
 
     def _check_watchdogs(self, obs: BackupObservation, started: float) -> None:

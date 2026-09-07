@@ -173,7 +173,7 @@ class TestSuccessfulBackup(RunnerTestCase):
     def test_resolves_the_device_to_its_disc_index(self):
         saving = [a for a in self.h.argvs if "mkv" in a][0]
         self.assertIn("disc:1", saving, "sr1 is disc:1 in the fixture")
-        self.assertIn("all", saving)
+        self.assertEqual(saving[-2], "0", "and title 0 is the feature")
 
     def test_ejects_a_good_disc(self):
         self.assertEqual(len(self.h.ejects), 1)
@@ -371,11 +371,46 @@ class TestTitleSelection(RunnerTestCase):
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h)
 
-        saving = [a for a in h.argvs if "mkv" in a][0]
-        self.assertIn("--minlength=6159", saving,
-                      "1:42:39, so the 2:32 extras are left behind")
+        saving = [a for a in h.argvs if "mkv" in a]
+        self.assertEqual(len(saving), 1, "one run, for the one chosen title")
+        self.assertEqual(saving[0][-2], "0", "the 1:42:39 feature")
         self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
         self.assertEqual(h.final.observation.titles_expected, 1)
+
+    def test_each_chosen_title_gets_its_own_run(self):
+        """Regression: a length filter cannot say "these two of the four".
+
+        Hancock offers its feature twice, so `mkv ... all --minlength` wrote
+        88 GB where the film is 44, and the second copy was claimed by no
+        title. Naming each title is what stops that.
+        """
+        two_cuts = "\n".join([
+            fx.ENUMERATION_LINES[0], "TCOUNT:2",
+            'TINFO:0,2,0,"Film"', 'TINFO:0,9,0,"1:32:13"',
+            'TINFO:0,11,0,"20000000000"', 'TINFO:0,26,0,"1,2,3,4"',
+            'TINFO:1,2,0,"Film"', 'TINFO:1,9,0,"1:42:14"',
+            'TINFO:1,11,0,"22000000000"', 'TINFO:1,26,0,"1,5,3,6"',
+        ])
+        h = self.scripted(scan=two_cuts)
+        h.on_line = lambda proc, line: self.make_output(
+            count=2, expected=42_000_000_000)
+        self.run_job(h)
+
+        saving = [a for a in h.argvs if "mkv" in a]
+        self.assertEqual(len(saving), 2, "one run per cut")
+        self.assertEqual(sorted(a[-2] for a in saving), ["0", "1"])
+        self.assertEqual(h.final.observation.titles_expected, 2)
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
+
+    def test_writing_the_same_footage_twice_is_flagged(self):
+        """A floor alone waves a doubled run through; Hancock's ratio was 2.0."""
+        h = self.scripted()
+        h.on_line = lambda proc, line: self.make_output(ratio=2.0)
+        self.run_job(h)
+
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS_UNVERIFIED)
+        self.assertIn("more than once", h.final.verdict.reason)
+        self.assertTrue(h.final.verdict.is_good, "the bytes are all there")
 
     def test_a_disc_hiding_its_feature_among_decoys_is_refused(self):
         """Playlist obfuscation: dozens of titles all the feature's length.

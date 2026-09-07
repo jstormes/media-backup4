@@ -63,6 +63,9 @@ class Config:
     #: disc: an MKV run leaves out menus, duplicate angles and unwanted
     #: tracks by design, so the disc's own size says nothing about it.
     size_ratio_floor: float = 0.90
+    #: ...and no more than this multiple of it. Catches a run that saved the
+    #: same footage twice, which a floor alone waves through.
+    size_ratio_ceiling: float = 1.5
     #: A title counts as feature-length at this fraction of the longest one.
     #: See :mod:`makemkv.selection` for why this is relative and not absolute.
     feature_ratio: float = 0.90
@@ -193,6 +196,8 @@ def validate(cfg: Config) -> list[Problem]:
 
     if not 0.0 < cfg.size_ratio_floor <= 1.0:
         problems.append(Problem(ERROR, "size_ratio_floor must be between 0 and 1"))
+    if cfg.size_ratio_ceiling < 1.0:
+        problems.append(Problem(ERROR, "size_ratio_ceiling must be at least 1"))
     if not 0.0 < cfg.feature_ratio <= 1.0:
         problems.append(Problem(ERROR, "feature_ratio must be between 0 and 1"))
     if cfg.max_feature_titles < 1:

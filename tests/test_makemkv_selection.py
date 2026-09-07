@@ -11,8 +11,8 @@ import unittest
 from media_backup import model
 from media_backup.makemkv.selection import (
     CUT_VARIANTS, SEPARATE_WORKS, SINGLE, Selection, SelectionPolicy, choose,
-    describe, expected_bytes, is_degenerate, match_files, relationship,
-    segments, shared_ratio,
+    describe, distinct, expected_bytes, is_degenerate, match_files,
+    relationship, segments, shared_ratio,
 )
 
 
@@ -77,10 +77,6 @@ class TestRealDiscs(unittest.TestCase):
         self.assertEqual([t.duration for t in choose(REAL_DVD).titles],
                          ["1:42:39"])
 
-    def test_minlength_is_the_shortest_thing_chosen(self):
-        """One pass with a length filter saves exactly the selection."""
-        self.assertEqual(choose(REAL_DVD).min_length_seconds, 6159)
-
     def test_expected_bytes_is_what_the_scan_said_they_weigh(self):
         self.assertEqual(expected_bytes(choose(REAL_DVD)), 4_245_336_064)
 
@@ -126,6 +122,47 @@ class TestARealProtectedDisc(unittest.TestCase):
         self.assertEqual(len(disc), 6)
         self.assertTrue(choose(disc), "six titles, but only three films")
         self.assertEqual(len(choose(disc).titles), 3)
+
+
+class TestPreferringTheRicherCopy(unittest.TestCase):
+    """A disc can offer the same footage twice with different track sets.
+
+    Hancock's feature comes as 23 streams and as 15 -- same runtime to the
+    frame, same seven audio tracks, fifteen subtitle tracks against seven.
+    Keeping whichever came first filed the poorer one about half the time.
+    """
+
+    def setUp(self):
+        segs = "1,2,3,4,5"
+        self.poor = title(0, "1:32:13", segments=segs, source="00003.mpls")
+        self.poor.streams = 15
+        self.rich = title(1, "1:32:13", segments=segs, source="00001.mpls")
+        self.rich.streams = 23
+
+    def test_the_richer_copy_wins_whichever_comes_first(self):
+        for order in ([self.poor, self.rich], [self.rich, self.poor]):
+            with self.subTest(first=order[0].source):
+                kept = distinct(order)
+                self.assertEqual([t.source for t in kept], ["00001.mpls"])
+
+    def test_only_one_survives(self):
+        self.assertEqual(len(distinct([self.poor, self.rich])), 1)
+
+    def test_titles_with_different_clip_lists_both_survive(self):
+        other = title(2, "1:42:14", segments="9,8,7")
+        kept = distinct([self.rich, other])
+        self.assertEqual(len(kept), 2)
+
+    def test_the_scan_order_is_kept(self):
+        """Order carries meaning downstream; the tie-break must not shuffle."""
+        a = title(0, "1:42:14", segments="9,8,7")
+        kept = distinct([a, self.poor, self.rich])
+        self.assertEqual([t.index for t in kept], [0, 1])
+
+    def test_titles_reporting_no_streams_still_deduplicate(self):
+        a = title(0, "1:30:00", segments="1,2")
+        b = title(1, "1:30:00", segments="1,2")
+        self.assertEqual(len(distinct([a, b])), 1)
 
 
 class TestDecoys(unittest.TestCase):

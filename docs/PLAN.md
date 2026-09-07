@@ -6,7 +6,7 @@ interrupted" at the bottom).
 
 ## Done and green
 
-`/usr/bin/python3 -m unittest discover -s tests -t .` -> **413 tests, OK**.
+`/usr/bin/python3 -m unittest discover -s tests -t .` -> **420 tests, OK**.
 
 Committed already:
 
@@ -616,6 +616,46 @@ the **physical release**, not the work. It can seed a lookup for a provider id
 but is not one. And Plex's ``{imdb-tt…}`` syntax is not Jellyfin's
 ``[imdbid-tt…]``; the wrong one is ignored silently rather than rejected.
 
+## Fixed: titles were deduplicated in the record but not on disk (2026-09-07)
+
+The Hancock disc wrote **88.45 GB** where the two cuts weigh 48.96, and
+``judge`` called it ``success``.
+
+``selection.distinct()`` collapsed the disc's four feature-length titles to
+two, and the collapse was **cosmetic**. The save ran ``mkv ... all`` with
+``--minlength`` from the shortest chosen title, and a length filter cannot
+exclude a second playlist of the *same runtime*. MakeMKV saved all four.
+``collection.json`` recorded ``output_file`` for two; the other two sat in
+``data/`` claimed by nothing. It passed judging because the size check was a
+floor: at a ratio of 1.81 a doubled run was as acceptable as a right one.
+
+And the surplus files were **not duplicates**, which made the dedup worse than
+wasteful. ``Hancock_t00`` and ``Hancock_t02`` are the same cut, same runtime to
+the frame, same seven audio tracks -- and carry **fifteen** and **seven**
+subtitle tracks. The disc offers the same footage with different track sets,
+and keying on the segments map alone kept whichever came first. Here that was
+the richer one by luck; reversed, the archive would have quietly kept the
+version missing eight subtitle languages.
+
+Three changes, and all of the cuts still get captured:
+
+* **``mkv`` is now run once per chosen title, by id.** A length filter cannot
+  say "these two of the four", and cannot separate a title from another of the
+  same runtime at all. One run per title also reads *less*: the pass that wrote
+  Hancock twice read the disc twice over to do it. No ``--minlength`` is
+  passed, so a title id means what it meant in the scan.
+* **``distinct()`` breaks ties on the stream count**, keeping the
+  best-equipped copy of a clip list rather than the first. ``Title.streams``
+  comes from the ``SINFO`` records the scan already emitted and the parser was
+  throwing away.
+* **``size_ratio_ceiling`` (1.5)** flags a run that wrote more than its titles
+  weigh as ``SUCCESS_UNVERIFIED`` -- kept, because every byte asked for is
+  there, but not passed silently. Hancock's 1.81 would have tripped it.
+
+The two collections already on disk predate all of this. They hold both cuts,
+with the surplus copies beside them; the publishing skill drives from
+``collection.json`` and stages only what a title claims.
+
 ## Next steps
 
 Nothing is blocked. In rough order of worth:
@@ -630,9 +670,11 @@ Nothing is blocked. In rough order of worth:
 - **Confirm the file matching on a real multi-title save.** It is tested
   against the awkward cases but has only been exercised for real on a disc
   where the suggested filename happened to be right.
-- **Decide how publishing to Jellyfin works** -- copy, hardlink or symlink,
-  and where the year and title get asked for. See
-  ``docs/jellyfin/library-layout.md``.
+- **Publishing to Jellyfin is now a project skill**,
+  ``.claude/skills/publish-to-jellyfin``, implementing the contract in
+  ``docs/jellyfin/publishing.md``. It hardlinks into
+  ``/srv/jellyfin/ready_to_add`` -- one filesystem, verified -- so the archive
+  keeps its copy.
 - **Watch a disc that genuinely defeats this.** The remaining hole is decoys
   that are structurally plausible -- distinct clips, sane chapters, feature
   length. Hancock is not one of those. When one turns up, the PowerDVD method
