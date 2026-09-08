@@ -1,19 +1,31 @@
 ---
 name: publish-to-jellyfin
-description: Stage finished disc backups into /srv/jellyfin/ready_to_add named the way Jellyfin needs. Use after discs finish backing up, when asked to publish or rename backups for Jellyfin, or to name a film's cuts, extras or episodes for a media server.
+description: Stage finished disc backups into a ready_to_add area named the way Jellyfin needs, then rsync them to the media server. Use after discs finish backing up, when asked to publish or rename backups for Jellyfin, or to name a film's cuts, extras or episodes for a media server.
 ---
 
 # Publish finished backups to Jellyfin
 
 The ripper leaves an archive organised for recovery: UUID directories and
 MakeMKV's filenames. This turns a finished collection into the tree Jellyfin
-expects, staged under `/srv/jellyfin/ready_to_add` for the operator to move
-into the library.
+expects, staged locally and then pushed to the media server.
 
-**The archive is the source and stays untouched.** Every write lands under
-`/srv/jellyfin/ready_to_add`. Both are on one filesystem, so the media is
-**hardlinked**: no second copy of 20 GB, both paths real, and deleting from
-the staging area leaves the archive whole.
+**The archive is the source and stays untouched.** Every write lands in the
+staging area, and the media is **hardlinked** into it: no second copy of 20 GB,
+both paths real, and deleting from the staging area leaves the archive whole.
+
+**A hardlink cannot cross a filesystem, so check before staging.** The archive
+lives on whatever `media_path` is mounted from, which is usually not the root
+filesystem. On this machine `/srv/media-backup` is an NVMe mount and `/srv` is
+root, so `/srv/jellyfin/ready_to_add` -- the path an earlier version of this
+skill named -- would have failed on the first `ln`.
+
+```bash
+test "$(stat -c %d "$ARCHIVE")" = "$(stat -c %d "$STAGE")" || echo "different filesystems"
+```
+
+Stage under `media_path` (`/srv/media-backup/ready_to_add`) unless the
+operator says otherwise. `config.validate` only cares about `collections/`,
+`finished/` and `cancelled/`, so a sibling directory there is harmless.
 
 Naming rules are in `docs/jellyfin/library-layout.md`; the contract this
 implements is `docs/jellyfin/publishing.md`. Read the layout doc before naming
@@ -83,58 +95,109 @@ Where the lookup is ambiguous, leave it out and let name and year match.
 ## 5. Build the tree
 
 ```
-/srv/jellyfin/ready_to_add/
+/srv/media-backup/ready_to_add/
 ├── Movies/
-│   └── Hancock (2008)/
-│       ├── Hancock (2008) - Theatrical Cut.mkv
-│       ├── Hancock (2008) - Unrated Extended Cut.mkv
-│       └── movie.nfo
+│   └── Hancock (2008) [imdbid-tt0448157]/
+│       ├── Hancock (2008) [imdbid-tt0448157] - Theatrical Cut.mkv
+│       └── Hancock (2008) [imdbid-tt0448157] - Unrated Extended Cut.mkv
 └── Shows/
-    └── Series Name (2019)/
+    └── Series Name (2019) [imdbid-tt1234567]/
         └── Season 01/
-            └── Series Name S01E01.mkv
+            └── S01E01.mkv
 ```
+
+Episode files are bare `S01E01.mkv` -- that is what the library's 1,665 of
+them look like. Extras all go in a flat `extras/`, not the semantic folders:
+nothing on a disc says whether a four-minute title is a deleted scene or a
+featurette.
 
 `Movies/` and `Shows/` because Jellyfin keeps them as separate libraries, so
 the staging area says which is which and the operator's move is a merge.
 
 Every file name begins **exactly** with its folder name before any version
-label, and the separator is space-hyphen-space. Extras go in a `behind the
-scenes`, `deleted scenes`, `featurettes` or `extras` subfolder; the full list
-is in the layout doc.
+label, and the separator is space-hyphen-space. Extras go in `extras/`.
 
-Keep names legal: replace `:` with ` -`. Leave the rest of the punctuation
-alone unless the operator says the library will live on NTFS or exFAT, where
-`? * " < > |` also need replacing.
+Keep names legal. **The library is on exFAT**, which rejects
+`" * / : < > ? \ |` outright -- this is not a portability nicety, a name
+containing one cannot be written at all. Replace `:` with ` -` and drop a
+trailing `?`: `WHAT'S UP DOC?` becomes `What's Up, Doc`. Apostrophes,
+brackets, parentheses and commas are all fine. exFAT is also case-insensitive,
+so two titles differing only in case collide.
 
 Link, do not copy:
 
 ```bash
 ln "$archive/data/Hancock_t01.mkv" \
-   "/srv/jellyfin/ready_to_add/Movies/Hancock (2008)/Hancock (2008) - Unrated Extended Cut.mkv"
+   "$STAGE/Movies/Hancock (2008) [imdbid-tt0448157]/Hancock (2008) [imdbid-tt0448157] - Unrated Extended Cut.mkv"
 ```
 
 Re-running must not produce `Hancock (2008) (1)`. When a target exists, compare
 inode numbers: same inode means already staged, so report it and move on.
 
-## 6. Write the NFO
+## 6. Put the provider id in the name, not in an NFO
 
-One `movie.nfo` beside the film, or `tvshow.nfo` beside a series. It keeps
-provider tags out of every filename, which matters because version labels and
-provider tags compete for the same name.
+The library uses `[imdbid-tt…]` in the folder name and repeated in the file
+name -- 228 of its 235 films, and **not one NFO file**. Match it:
 
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<movie>
-  <title>Hancock</title>
-  <year>2008</year>
-  <uniqueid type="imdb" default="true">tt0448157</uniqueid>
-</movie>
+```
+Movies/Match Point (2005) [imdbid-tt0416320]/
+└── Match Point (2005) [imdbid-tt0416320].mkv
 ```
 
-Include `uniqueid` only for an id actually looked up and confirmed.
+Earlier versions of this skill said to write `movie.nfo`. Do not: it would put
+a second metadata mechanism into a library that consistently uses one. See
+`docs/jellyfin/library-layout.md`, which measured this on 2026-09-07.
 
-## 7. Verify, then report
+**Look the id up, never recall it.** A malformed or wrong tag is silently
+ignored or silently authoritative -- neither looks like an error, both look
+like Jellyfin matching badly. Confirm against imdb.com before writing, and if
+the lookup is at all ambiguous leave the tag off entirely and let name and
+year match. The library already carries three tags that fail this way:
+`[indbid-…]`, `[imbdid-…]`, and one missing the `imdbid-` prefix.
+
+## 7. Push it to the media server
+
+Staging is local; the library is on another machine. `rsync` over SSH, not a
+mount: a failed transfer is then an exit code to retry rather than a hung job,
+and nothing on the ripper depends on the server being up.
+
+**The library filesystem is exFAT.** That drives every flag here:
+
+```bash
+rsync -rltDvh --no-perms --no-owner --no-group --modify-window=1 \
+      --partial --append-verify \
+      "$STAGE/Movies/" nas2:/srv/dev-disk-by-uuid-78AA-077A/Movies/
+```
+
+- `--no-perms --no-owner --no-group`, and `-rltD` rather than `-a`. exFAT
+  stores no permissions or ownership: the mount fabricates them from
+  `fmask=0000,dmask=0000`, which is why every file in the library reads
+  `rwxrwxrwx root:root`. Trying to preserve or set modes is pointless, and
+  `--chmod` would be too.
+- `--modify-window=1` because FAT-family timestamps are coarse. Without it a
+  re-run can decide every file changed and send 10 GB again.
+- `--partial --append-verify` to resume a part-sent 20 GB title instead of
+  restarting it.
+
+Run it with `--dry-run` first and read the file list.
+
+**Check the names before sending.** exFAT rejects `" * / : < > ? \ |`
+outright, so replacing `:` with ` -` is a hard requirement rather than a
+tidiness rule -- "Spider-Man: Across The Spider-Verse" cannot be written at
+all otherwise. exFAT is also case-insensitive, so two films differing only in
+case would collide.
+
+```bash
+find "$STAGE" -mindepth 1 -printf '%P\n' | grep -E '["*:<>?\\|]'
+```
+
+There is no 4 GB limit: this is exFAT, not FAT32. A 26 GB title already sits
+in the library.
+
+After the transfer, tell the operator to rescan the Jellyfin library -- new
+files are not noticed until it does.
+
+## 8. Verify, then report
 
 Check every one of these before reporting success:
 
@@ -143,8 +206,11 @@ Check every one of these before reporting success:
 - Every staged media file has a link count above 1 (`stat -c '%h %n'`) —
   proving a hardlink rather than a copy.
 - Every file name begins with its parent folder's name.
-- The archive is unchanged: `find /srv/media-backup/finished -newer …` finds
-  nothing, and no file there has been renamed or removed.
+- The archive is unchanged. Fingerprint it before staging and compare after:
+  `find /srv/media-backup/finished -type f -printf '%i %s %p\n' | sort`.
+- After a transfer, the remote size matches: `ssh nas2 find … -printf '%s %P\n'`
+  against the same for the staging area. Do not trust rsync's exit code alone
+  on exFAT, where it cannot set the metadata it would normally verify.
 
 Report per collection: what was staged and under what name, what was asked and
 answered, any surplus files left in the archive, and anything skipped with the
@@ -156,8 +222,21 @@ The two collections finished on 2026-09-07:
 
 | Archive | Titles with `output_file` | Staged as |
 |---|---|---|
-| `Hancock`, UPC 043396279001 | `Hancock_t00.mkv` 1:32:13, `Hancock_t01.mkv` 1:42:14 — shared clip backbone, so two cuts | `Movies/Hancock (2008)/Hancock (2008) - Theatrical Cut.mkv` and `… - Unrated Extended Cut.mkv` |
-| `WHAT'S UP DOC?`, UPC 883929152186 | `WHAT'S UP DOC-A1_t00.mkv` 1:33:30 | `Movies/What's Up, Doc? (1972)/What's Up, Doc? (1972).mkv` |
+| `Hancock`, UPC 043396279001 | `Hancock_t00.mkv` 1:32:13, `Hancock_t01.mkv` 1:42:14 — shared clip backbone, so two cuts | `Movies/Hancock (2008) [imdbid-tt0448157]/Hancock (2008) [imdbid-tt0448157] - Theatrical Cut.mkv` and `… - Unrated Extended Cut.mkv` |
+| `WHAT'S UP DOC?`, UPC 883929152186 | `WHAT'S UP DOC-A1_t00.mkv` 1:33:30 | `Movies/What's Up, Doc (1972) [imdbid-tt0069495]/What's Up, Doc (1972) [imdbid-tt0069495].mkv` — the `?` is dropped, exFAT will not take it |
 
 Hancock's `data/` also holds `Hancock_t02.mkv` and `_t03.mkv`, duplicates no
 title claims. They stay in the archive and go in the report.
+
+And the two from 2026-09-07 that this skill was first run against:
+
+| Archive | Title with `output_file` | Staged as |
+|---|---|---|
+| `Match Point`, UPC 678149486629 | `B1_t00.mkv` 2:04:12 | `Movies/Match Point (2005) [imdbid-tt0416320]/…` |
+| `DVD_VIDEO`, UPC 043396100589 | `Fresh Horses-A1_t00.mkv` 1:42:39 | `Movies/Fresh Horses (1988) [imdbid-tt0095178]/…` |
+
+Note the second: the volume label is the generic `DVD_VIDEO` and the film is
+`Fresh Horses`. Always take the name from `makemkv_disc_name`, never from the
+label. Both discs' short titles carried no `output_file` -- selection never
+saved them -- so there were no extras to stage, which is not the same as
+extras having been missed.
