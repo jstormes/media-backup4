@@ -138,12 +138,37 @@ provider tag out of both filenames.
 
 ## Copy, hardlink or symlink
 
-Undecided. Hardlinks keep one copy of the bytes and need the archive and the
-library on one filesystem -- a constraint `config.validate` already enforces
-between `media_path` and `finished_path`, so the precedent exists. Symlinks
-are cheaper still but break if the archive moves. Copying doubles the storage
-and is the only option across filesystems.
+Both, in sequence -- decided 2026-09-07, once the library's location was known.
 
-Whichever is chosen, deleting from the Jellyfin library must never delete from
-the archive. With hardlinks that follows; with a copy it needs saying; with
-symlinks a careless recursive delete would follow the link.
+**Hardlink into a staging area on the archive's own filesystem.** No second
+copy of 20 GB, both paths real, and removing a staged link leaves the archive
+whole. A hardlink cannot cross a filesystem, so the staging area belongs under
+`media_path`, not on the root filesystem: `/srv/jellyfin/ready_to_add` -- the
+path first written down for this -- is on `/`, while the archive is an NVMe
+mount, and every `ln` would have failed.
+
+**Then rsync the staging area to the server.** The library is on another
+machine, so no link can reach it. rsync over SSH rather than a mount, because
+a failed transfer is then an exit code to retry rather than a job wedged in
+uninterruptible sleep.
+
+Deleting from the Jellyfin library must never delete from the archive. Across
+a network that follows for free: the two are unrelated filesystems.
+
+## Reclaiming the archive
+
+The archive is not kept forever. Once the copy on the server is proven
+**byte-for-byte by checksum** -- not by size, and not by rsync's exit code,
+which on exFAT has no stored metadata to check against -- the media in
+`data/` is deleted and the space returned.
+
+What survives is `collection.json`, the attempt logs, and a `.published`
+marker recording where each file went and the hash that matched. About a
+megabyte, and it is the entire record of what the disc held, what was chosen
+and why, and what makemkvcon said while copying it. Reclaiming space is not a
+reason to discard provenance.
+
+The bar is deliberately high because this deletes the last local copy. One
+mismatched hash, one skipped disc, one disc in a state other than `done`, and
+the whole collection stays. The fallback for a lost file is re-ripping the
+physical disc, which is why the disc -- not the archive -- is the master.

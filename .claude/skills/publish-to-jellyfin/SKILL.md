@@ -1,6 +1,6 @@
 ---
 name: publish-to-jellyfin
-description: Stage finished disc backups into a ready_to_add area named the way Jellyfin needs, then rsync them to the media server. Use after discs finish backing up, when asked to publish or rename backups for Jellyfin, or to name a film's cuts, extras or episodes for a media server.
+description: Stage finished disc backups named the way Jellyfin needs, rsync them to the media server, and reclaim the local space once the copy is checksum-verified. Use after discs finish backing up, when asked to publish or rename backups for Jellyfin, or to name a film's cuts, extras or episodes for a media server.
 ---
 
 # Publish finished backups to Jellyfin
@@ -9,9 +9,14 @@ The ripper leaves an archive organised for recovery: UUID directories and
 MakeMKV's filenames. This turns a finished collection into the tree Jellyfin
 expects, staged locally and then pushed to the media server.
 
-**The archive is the source and stays untouched.** Every write lands in the
-staging area, and the media is **hardlinked** into it: no second copy of 20 GB,
-both paths real, and deleting from the staging area leaves the archive whole.
+**The archive is the source and stays untouched while publishing.** Every
+write lands in the staging area, and the media is **hardlinked** into it: no
+second copy of 20 GB, both paths real, and deleting from the staging area
+leaves the archive whole.
+
+It is reclaimed only at the very end, and only once the copy on the server has
+been proven byte-for-byte -- see step 9. Until that proof exists the archive is
+the only copy that has not crossed a network.
 
 **A hardlink cannot cross a filesystem, so check before staging.** The archive
 lives on whatever `media_path` is mounted from, which is usually not the root
@@ -40,6 +45,11 @@ finishing is an atomic rename.
 Publish a disc when `state` is `done`. Report and skip anything else — a disc
 reading `Needs you` is waiting on a person to rip it by hand, and staging what
 it did produce would file a fragment as if it were the film.
+
+**Skip any collection holding a `.published` marker.** Step 9 writes one after
+reclaiming the media, so the directory still carries `collection.json` and the
+logs but no longer has the files. Without this check a second run reads the
+metadata, finds no media, and reports a fault that is not one.
 
 When `expected_disc_count` exceeds the number of `done` discs, say so and stop.
 The operator may choose to publish an incomplete set, but knowingly.
@@ -215,6 +225,58 @@ Check every one of these before reporting success:
 Report per collection: what was staged and under what name, what was asked and
 answered, any surplus files left in the archive, and anything skipped with the
 reason.
+
+## 9. Prove the copy, then reclaim the space
+
+Only after step 8's checks pass. This deletes the last local copy of the rip,
+so the bar is a checksum and nothing less.
+
+**Size and a zero exit code are not enough.** rsync verifies its own stream,
+but exFAT stores no permissions, ownership or fine-grained times, so the
+metadata it would normally compare against on a later run does not exist.
+Hash both ends and compare:
+
+```bash
+remote=$(ssh nas2 sha256sum "'$dest'" | cut -d' ' -f1)
+local=$(sha256sum "$staged" | cut -d' ' -f1)
+[ "$remote" = "$local" ] || { echo "MISMATCH, keeping the archive"; exit 1; }
+```
+
+This re-reads every byte on both machines. A 20 GB title takes minutes, most
+of it on the NAS. That is the price of deleting the only other copy, and it is
+worth paying.
+
+**Reclaim only a collection that fully verified.** Every published file
+hashed and matched, nothing skipped, no disc left in a state other than `done`,
+and `expected_disc_count` satisfied. One mismatch anywhere and the whole
+collection stays.
+
+Then, in this order:
+
+1. Remove the staged links under `ready_to_add`. On their own these free
+   nothing -- they are hardlinks, and the bytes belong to the archive -- so
+   this is tidying, not reclamation.
+2. Remove the media: the contents of each disc's `data/` directory.
+3. **Keep `collection.json` and `logs/`.** They are about a megabyte and they
+   are the entire record that this disc was ripped, what titles it held, what
+   was chosen and why, and what makemkvcon said while doing it. Reclaiming the
+   space does not mean discarding the provenance.
+4. Write a `.published` marker beside `collection.json` recording where each
+   file went and the hash that was matched:
+
+```json
+{"published_at": "2026-09-07T20:49:00Z",
+ "destination": "nas2:/srv/dev-disk-by-uuid-78AA-077A/Movies",
+ "files": [{"staged_as": "Match Point (2005) [imdbid-tt0416320].mkv",
+            "sha256": "…", "size_bytes": 6262208596}]}
+```
+
+The marker is what makes this safe to re-run and what tells a later reader
+that an empty `data/` is a finished job rather than a lost one.
+
+**Never reclaim on the operator's behalf without saying so.** Report the
+freed space and the destination in the same breath, so "it worked" and "your
+local copy is gone" arrive together rather than one being discovered later.
 
 ## Worked example
 
