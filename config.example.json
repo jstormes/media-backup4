@@ -2,27 +2,20 @@
   "media_path": "/srv/media-backup",
   "finished_path": null,
   "cancelled_path": null,
-
   "makemkvcon": "/usr/local/bin/makemkvcon",
   "cache_mb": 1024,
   "decrypt": true,
   "use_stdbuf": true,
   "isolate_drives": true,
   "bwrap": "/usr/bin/bwrap",
-
   "max_concurrent_jobs": 0,
   "min_free_margin_bytes": 10737418240,
-  "size_ratio_floor": 0.70,
+  "size_ratio_floor": 0.7,
   "size_ratio_ceiling": 1.5,
   "duration_tolerance_s": 10,
   "stall_timeout_s": 1800,
   "probe_timeout_s": 300,
   "max_job_duration_s": 21600,
-
-  "feature_ratio": 0.90,
-  "min_feature_seconds": 600,
-  "max_feature_titles": 5,
-
   "eject_on_success": true,
   "keep_rejected_attempts": 1,
   "max_log_bytes": 52428800

@@ -29,6 +29,10 @@ DISC_SIZE = 4_556_390_400
 #: that title alone at the default policy: 1:42:39 against extras of 2:32.
 FEATURE_BYTES = 4_245_336_064
 FEATURE_SECONDS = 6159
+#: Every title DVD_SCAN reports, which is now every title that gets saved:
+#: the feature and its three clips, as (seconds, bytes).
+DVD_SCAN_TITLES = ((FEATURE_SECONDS, FEATURE_BYTES), (152, 99_866_624),
+                   (152, 101_634_048), (152, 80_885_760))
 
 
 #: A transcript standing for a process that emits nothing and never exits --
@@ -175,18 +179,22 @@ class RunnerTestCase(unittest.TestCase):
         what lets match_files pair them up.
         """
         if titles is None:
-            titles = ([(FEATURE_SECONDS, FEATURE_BYTES)] if count is None
+            titles = (list(DVD_SCAN_TITLES) if count is None
                       else [(FEATURE_SECONDS + i, FEATURE_BYTES // count + i)
                             for i in range(count)])
         for i, (seconds, size) in enumerate(titles):
             write_mkv(self.dest / f"Fresh Horses-A{i}_t0{i}.mkv",
                       seconds, max(1, int(size * ratio)))
 
-    def scripted(self, saving=None, scan=None):
-        """The three processes a run spawns: enumerate, scan, save."""
+    def scripted(self, saving=None, scan=None, saves=4):
+        """The processes a run spawns: enumerate, scan, then one save a title.
+
+        ``saves`` defaults to the four titles DVD_SCAN reports, since every
+        title is now copied rather than a chosen one.
+        """
         return Harness([fx.ENUMERATION_LINES,
-                        (scan or fx.DVD_SCAN).splitlines(),
-                        (saving or fx.MKV_SUCCESS_ONE).splitlines()])
+                        (scan or fx.DVD_SCAN).splitlines()]
+                       + [(saving or fx.MKV_SUCCESS).splitlines()] * saves)
 
     def run_job(self, harness, request=None):
         runner = BackupRunner(
@@ -234,7 +242,8 @@ class TestSuccessfulBackup(RunnerTestCase):
 
 class TestFailures(RunnerTestCase):
     def test_dirty_disc_fails_and_counts_read_errors(self):
-        h = self.scripted(saving=fx.MKV_DIRTY_DISC)
+        h = self.scripted(saving=fx.MKV_DIRTY_DISC, scan=fx.ONE_TITLE_SCAN,
+                          saves=1)
         self.run_job(h)
         self.assertEqual(h.final.verdict.outcome, outcome.FAILURE)
         self.assertEqual(h.final.observation.read_error_count, 3)
@@ -264,7 +273,7 @@ class TestFailures(RunnerTestCase):
         size ratio cannot tell a short copy from an ordinary one. A duration
         can: a copy that stopped early is short.
         """
-        h = self.scripted()
+        h = self.scripted(scan=fx.ONE_TITLE_SCAN, saves=1)
         h.on_line = lambda proc, line: self.make_output(
             [(FEATURE_SECONDS * 0.2, FEATURE_BYTES // 5)])
         self.run_job(h)
@@ -280,7 +289,7 @@ class TestFailures(RunnerTestCase):
             with (self.dest / "Fresh Horses-A0_t00.mkv").open("wb") as handle:
                 handle.truncate(int(FEATURE_BYTES * 0.99))
 
-        h = self.scripted()
+        h = self.scripted(scan=fx.ONE_TITLE_SCAN, saves=1)
         h.on_line = sparse_bytes
         self.run_job(h)
 
@@ -474,16 +483,23 @@ class TestTitleScan(RunnerTestCase):
 class TestTitleSelection(RunnerTestCase):
     """What gets saved, and which discs are handed back to the operator."""
 
-    def test_only_the_feature_is_saved_from_a_film_disc(self):
+    def test_every_title_on_the_disc_is_saved(self):
+        """The feature and its three clips, one run each.
+
+        Nothing here decides which of them is the film. That question moved
+        to publish time on 2026-09-08, after a length threshold twice threw
+        away the second feature of a double bill.
+        """
         h = self.scripted()
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h)
 
         saving = [a for a in h.argvs if "mkv" in a]
-        self.assertEqual(len(saving), 1, "one run, for the one chosen title")
-        self.assertEqual(saving[0][-2], "0", "the 1:42:39 feature")
+        self.assertEqual(len(saving), 4, "one run per title")
+        self.assertEqual(sorted(a[-2] for a in saving), ["0", "1", "2", "3"])
+        self.assertEqual(saving[0][-2], "0", "the 1:42:39 feature goes first")
         self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
-        self.assertEqual(h.final.observation.titles_expected, 1)
+        self.assertEqual(h.final.observation.titles_expected, 4)
 
     def test_each_chosen_title_gets_its_own_run(self):
         """Regression: a length filter cannot say "these two of the four".
@@ -512,47 +528,51 @@ class TestTitleSelection(RunnerTestCase):
 
     def test_writing_the_same_footage_twice_is_flagged(self):
         """A floor alone waves a doubled run through; Hancock's ratio was 2.0."""
-        h = self.scripted()
-        h.on_line = lambda proc, line: self.make_output(ratio=2.0)
+        h = self.scripted(scan=fx.ONE_TITLE_SCAN, saves=1)
+        h.on_line = lambda proc, line: self.make_output(
+            [(FEATURE_SECONDS, FEATURE_BYTES)], ratio=2.0)
         self.run_job(h)
 
         self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS_UNVERIFIED)
         self.assertIn("more than once", h.final.verdict.reason)
         self.assertTrue(h.final.verdict.is_good, "the bytes are all there")
 
-    def test_a_disc_hiding_its_feature_among_decoys_is_refused(self):
-        """Playlist obfuscation: dozens of titles all the feature's length.
+    def test_a_disc_of_decoy_playlists_is_copied_rather_than_refused(self):
+        """Playlist obfuscation used to hand the disc back to the operator.
 
-        There is no way to tell the real one from here, so the disc goes back
-        to the operator rather than being guessed at.
+        It no longer does. Telling a decoy from a feature was the same guess
+        as telling a feature from an episode, and getting it wrong lost real
+        films. Everything is copied and the pile is sorted out at publish
+        time; the cost is disk, which is recoverable.
         """
         h = self.scripted(scan=fx.DECOY_SCAN)
+        h.on_line = lambda proc, line: self.make_output(
+            [(8280 + i, 30_000_000_000 + i) for i in range(40)])
         self.run_job(h)
 
-        self.assertEqual(h.final.error_kind, model.ERR_DECOY_TITLES)
-        self.assertIn("by hand", h.final.verdict.reason)
-        self.assertFalse(any("mkv" in a for a in h.argvs),
-                         "and nothing was read off it")
+        self.assertEqual(h.final.error_kind, "")
+        self.assertEqual(len([a for a in h.argvs if "mkv" in a]), 40)
 
-    def test_the_decoy_threshold_is_configurable(self):
-        """A box set of six episodes is not a protected disc."""
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0,
-                          use_stdbuf=False, max_feature_titles=40, isolate_drives=False)
-        h = self.scripted(scan=fx.DECOY_SCAN)
-        h.on_line = lambda proc, line: self.make_output(count=40)
-        self.run_job(h, self.request(cfg=self.cfg))
-        self.assertTrue(any("mkv" in a for a in h.argvs))
-
-    def test_a_disc_with_nothing_worth_saving_is_refused(self):
+    def test_short_titles_are_saved_like_any_others(self):
+        """Three minutes was once too short to be worth saving. No longer."""
         short = "\n".join(
             [fx.ENUMERATION_LINES[0], "TCOUNT:3"]
             + [f'TINFO:{i},9,0,"0:03:0{i}"\nTINFO:{i},11,0,"100000"'
                for i in range(3)])
-        h = self.scripted(scan=short)
+        h = self.scripted(scan=short, saves=3)
+        h.on_line = lambda proc, line: self.make_output(
+            [(180 + i, 100_000 + i) for i in range(3)])
+        self.run_job(h)
+
+        self.assertEqual(len([a for a in h.argvs if "mkv" in a]), 3)
+
+    def test_a_disc_with_no_titles_at_all_is_refused(self):
+        """The one refusal left: there is nothing to copy."""
+        h = self.scripted(scan="\n".join([fx.ENUMERATION_LINES[0], "TCOUNT:0"]))
         self.run_job(h)
 
         self.assertEqual(h.final.error_kind, model.ERR_NO_FEATURE)
-        self.assertIn("10 minutes", h.final.verdict.reason)
+        self.assertFalse(any("mkv" in a for a in h.argvs))
 
 
 class TestRobustness(RunnerTestCase):
@@ -644,8 +664,8 @@ class TestIsolatedJobsDoNotShareADriveList(RunnerTestCase):
         self.assertEqual(first.final.verdict.outcome, outcome.SUCCESS)
         self.assertEqual(second.final.verdict.outcome, outcome.SUCCESS,
                          "sr1 resolved its own drive, not the list sr0 made")
-        self.assertEqual(len(second.argvs), 3,
-                         "enumerate, scan, save -- it got past resolving")
+        self.assertEqual(len(second.argvs), 6,
+                         "enumerate, scan, four saves -- it got past resolving")
 
     def test_the_isolated_disc_index_is_the_sandbox_s_own(self):
         """Index 0 for sr1, which is index 1 when every drive is listed."""

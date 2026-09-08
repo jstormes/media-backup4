@@ -79,14 +79,6 @@ class Config:
     #: run is judged incomplete. Seconds. Measured 2026-09-07, a correct
     #: Blu-ray title came back 0.6s under what the scan reported.
     duration_tolerance_s: int = 10
-    #: A title counts as feature-length at this fraction of the longest one.
-    #: See :mod:`makemkv.selection` for why this is relative and not absolute.
-    feature_ratio: float = 0.90
-    #: ...and at least this long outright.
-    min_feature_seconds: int = 600
-    #: More feature-length titles than this means the disc is hiding its
-    #: feature among decoys. Those are left to the operator by hand.
-    max_feature_titles: int = 5
     #: A run with no progress and no messages for this long is wedged. A disc
     #: grinding through read retries still emits MSG:2003, so it is not silent.
     stall_timeout_s: int = 1800
@@ -220,10 +212,6 @@ def validate(cfg: Config) -> list[Problem]:
         problems.append(Problem(ERROR, "size_ratio_floor must be between 0 and 1"))
     if cfg.size_ratio_ceiling < 1.0:
         problems.append(Problem(ERROR, "size_ratio_ceiling must be at least 1"))
-    if not 0.0 < cfg.feature_ratio <= 1.0:
-        problems.append(Problem(ERROR, "feature_ratio must be between 0 and 1"))
-    if cfg.max_feature_titles < 1:
-        problems.append(Problem(ERROR, "max_feature_titles must be at least 1"))
     if cfg.cache_mb < 1:
         problems.append(Problem(ERROR, "cache_mb must be at least 1"))
     if cfg.probe_timeout_s < 1:

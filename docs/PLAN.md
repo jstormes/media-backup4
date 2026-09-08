@@ -344,6 +344,14 @@ lost extra is not the same news as a lost feature, and the operator decides.
 
 ### Playlist obfuscation, and refusing to guess
 
+> **Superseded on 2026-09-08.** Everything in this section and the two that
+> follow it describes selection as it was built and why. None of it is how the
+> app behaves now: it no longer picks a feature, no longer deduplicates and no
+> longer refuses a disc for looking protected. See "Copying everything, and
+> why the feature had to stop being guessed" at the end of this document. The
+> reasoning is kept because the failure it caused is only legible against it.
+
+
 Some Blu-rays carry dozens of decoy playlists all cut to roughly the feature's
 length, precisely so a tool picking "the longest title" picks garbage.
 ``makemkv/selection.py`` refuses those discs rather than guessing: past
@@ -363,6 +371,9 @@ features, all saved, and only past five does it read as protection.
 detects decoys. Lowering ``feature_ratio`` to keep a disc's extras would also
 make ordinary discs look protected. Decoupling them -- a separate floor for
 what to keep -- is a small change if extras turn out to be wanted.
+
+*This limitation is what bit, on 2026-09-08, and decoupling was not the fix.
+The threshold was answering a question it could not answer at all.*
 
 ### Verified against real output
 
@@ -899,3 +910,97 @@ anything heavy under a cap so the cap dies instead of the desktop:
 Note `/usr/bin/python3` -- the default `python3` on this box is a venv without
 PyGObject. `llama-test.service` was stopped and disabled to get the memory
 back; re-enable with `systemctl --user enable --now llama-test.service`.
+
+
+## Copying everything, and why the feature had to stop being guessed (2026-09-08)
+
+Two DVDs came out of `finished/` with half their content missing, and the app
+had reported both discs `done`, "all titles saved".
+
+Both are double features from the same Echo Bridge box set:
+
+| disc | titles | saved | lost |
+|---|---|---|---|
+| `LEECHES_COLD_EQUATIONS` | 1:33:02 and 1:26:28, both `segments` `1-12` | The Cold Equations | **Leeches!** |
+| `FIREHEAD_AND_LAST_LIVES` | 1:35:43 `1-12`, 1:23:43 `1-15` | Last Lives | **Firehead** |
+
+Two different causes, both silent:
+
+* `distinct()` keyed on the segments map alone. On a Blu-ray that map names
+  global clip files and identifies content. **On a DVD it is a cell range
+  local to its own title, and every DVD title's range starts at 1.** Measured
+  across all 21 disc scans in the archive: every DVD title expands to exactly
+  `{1..N}`, one disc reports `1,2` on six unrelated extras, and the two films
+  above both report `1-12`. So the "duplicate" filter deleted a film.
+* `feature_ratio` at 0.90. The shorter film is 87% of the longer, so it was
+  never a candidate.
+
+### Why the fix was not a better threshold
+
+The first attempt was a separate keep-floor, a duration guard on every
+cross-title use of the segments map, and a `comparable_segments()` helper to
+tell the DVD spelling from the Blu-ray one. It worked -- replayed over all 21
+scans it recovered both films, changed nothing else and cost +43 GB -- and it
+was still wrong, because the next two cases have no threshold at all:
+
+* a kids' disc carries a dozen features of twenty minutes;
+* a TV disc carries a season of episodes, which are feature-length by every
+  structural test available here and a box set by every other.
+
+There is no length, ratio or count that separates a second feature from a
+long documentary, or an episode from a decoy, using a scan. The question
+"which title is the work?" is not answerable from the data this app has, and
+it does not have to be answered here.
+
+### What it does now
+
+`selection.choose()` returns every title the scan reported, longest first.
+That is the whole policy. MakeMKV has already applied its own default minimum
+length to the list -- neither the scan nor the save passes `--minlength`, so
+what the scan lists is exactly what the save writes -- and that is the only
+filter left in the pipeline, in the one place it belongs.
+
+Gone with it: `SelectionPolicy` and its four thresholds, `distinct()`,
+`is_degenerate()`, `_doubts()`, `describe()`, and the two refusal kinds they
+raised. `ERR_DECOY_TITLES` and `ERR_AMBIGUOUS_TITLES` remain defined and the
+GUI's amber "Needs you" state remains wired, but nothing produces them now;
+`Selection.needs_operator` is hardcoded false. The one refusal left is a disc
+whose scan reports no title with a duration.
+
+Kept, because they describe rather than decide: `segments()`, `shared_ratio()`,
+`relationship()`, `match_files()`, `expected_bytes()`.
+
+`relationship()` gained a correctness fix on the way. It reported
+`cut_variants` whenever the candidates shared a backbone, and one DVD cell
+range is routinely a subset of another -- `{1..12}` inside `{1..15}` scores
+1.0. Real seamless branching means **each cut carries clips the other lacks**;
+requiring exclusives on both sides is what makes it right. Plan 9's disc was
+being called two cuts of one film and is two films.
+
+### What it costs, measured
+
+Replayed over every disc scan in the archive:
+
+| | ripped | would now rip |
+|---|---|---|
+| whole archive | 255 GB | **414 GB** (1.6x) |
+| Hancock alone | 52.6 GB | **149.1 GB** from a 45.3 GB disc |
+
+Hancock is the worst case and worth understanding: it authors each of its two
+cuts twice, and offers seventeen of the feature's clips as titles in their own
+right, so the film is written several times over. A disc carrying decoy
+playlists now writes the decoys.
+
+That is the trade, stated plainly: **disk, which is recoverable, in exchange
+for never again silently dropping a film, which was not.** The publish step
+already has a person, the disc sleeve and the ability to ask -- that is where
+a title becomes a film, a cut, an episode or an extra.
+
+### What this leaves for the publish skill
+
+It now receives many titles per disc rather than one or two, and every one of
+them is real content that something has to name or discard. `relationship()`
+still tells it cuts from separate works. The rest -- which of eight titles are
+episodes, which twelve-minute title is a deleted scene, whether a 1:26 title
+is the second film or a making-of -- is a human call at publish time, and the
+files are all there to make it with.

@@ -203,11 +203,16 @@ class Disc:
 
     @property
     def main_title(self) -> "Title | None":
-        """The feature, as opposed to the trailers and the menu loops.
+        """The biggest title on the disc, for summarising it on screen.
 
-        The largest title, not the longest-named one: a DVD's extras are a
-        couple of hundred megabytes against the feature's several gigabytes,
-        and size is an integer where duration is a string.
+        The largest, not the first: a DVD's extras are a couple of hundred
+        megabytes against a feature's several gigabytes, and size is an
+        integer where duration is a string.
+
+        Not a claim that this *is* the feature. A disc can hold two films or
+        a season of episodes, and since 2026-09-08 nothing in the app decides
+        which title is the work -- see :mod:`makemkv.selection`. This is a
+        label for a list, and the caller should word it as one.
         """
         return max(self.titles, key=lambda t: t.size_bytes, default=None)
 

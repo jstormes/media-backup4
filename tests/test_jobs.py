@@ -583,7 +583,7 @@ class TestSuccessfulPipeline(PipelineTestCase):
         super().setUp()
         self.disc, self.dev = self.add_disc()
         self.run_one(self.disc, self.dev,
-                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                     [fx.ENUMERATION_LINES, fx.ONE_TITLE_SCAN.splitlines(),
                       fx.MKV_SUCCESS_ONE.splitlines()])
 
     def test_the_disc_ends_up_done(self):
@@ -629,7 +629,7 @@ class TestFailureAndRetry(PipelineTestCase):
         disc, dev = self.add_disc()
         self.output_ratio = 0.5
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                     [fx.ENUMERATION_LINES, fx.ONE_TITLE_SCAN.splitlines(),
                       fx.MKV_DIRTY_DISC.splitlines()])
 
         self.assertEqual(disc.state, model.FAILED)
@@ -641,7 +641,7 @@ class TestFailureAndRetry(PipelineTestCase):
     def test_nothing_is_retried_on_its_own(self):
         disc, dev = self.add_disc()
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                     [fx.ENUMERATION_LINES, fx.ONE_TITLE_SCAN.splitlines(),
                       fx.MKV_DIRTY_DISC.splitlines()])
         self.assertEqual(self.manager.queued_count, 0)
         self.assertEqual(disc.attempt_count, 1)
@@ -650,13 +650,13 @@ class TestFailureAndRetry(PipelineTestCase):
         disc, dev = self.add_disc()
         self.output_ratio = 0.5
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                     [fx.ENUMERATION_LINES, fx.ONE_TITLE_SCAN.splitlines(),
                       fx.MKV_DIRTY_DISC.splitlines()])
         self.assertEqual(disc.state, model.FAILED)
 
         self.output_ratio = 0.99
         self.run_one(disc, dev,
-                     [fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+                     [fx.ENUMERATION_LINES, fx.ONE_TITLE_SCAN.splitlines(),
                       fx.MKV_SUCCESS_ONE.splitlines()])
 
         reloaded = self.reload().discs[0]
@@ -683,9 +683,9 @@ class TestPipelineQueue(PipelineTestCase):
         first, dev = self.add_disc()
         second = self.store.add_disc(self.collection, dev)
         self.transcripts = [
-            fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+            fx.ENUMERATION_LINES, fx.ONE_TITLE_SCAN.splitlines(),
             fx.MKV_SUCCESS_ONE.splitlines(),
-            fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(),
+            fx.ENUMERATION_LINES, fx.ONE_TITLE_SCAN.splitlines(),
             fx.MKV_SUCCESS_ONE.splitlines(),
         ]
         self.manager.enqueue(self.collection, first, dev)

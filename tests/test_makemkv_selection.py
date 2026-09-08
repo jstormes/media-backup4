@@ -10,9 +10,8 @@ import unittest
 
 from media_backup import model
 from media_backup.makemkv.selection import (
-    CUT_VARIANTS, SEPARATE_WORKS, SINGLE, Selection, SelectionPolicy, choose,
-    describe, distinct, expected_bytes, is_degenerate, match_files,
-    relationship, segments, shared_ratio,
+    CUT_VARIANTS, SEPARATE_WORKS, SINGLE, Selection, choose, expected_bytes,
+    match_files, relationship, segments, shared_ratio,
 )
 
 
@@ -20,6 +19,17 @@ def title(index, duration, size=1_000_000_000, segments="", source="",
           chapters=0):
     return model.Title(index=index, duration=duration, size_bytes=size,
                        segments=segments, source=source, chapters=chapters)
+
+
+def decoy(index, duration, source="", chapters=0):
+    """One of a pile of playlists cut to the feature's length.
+
+    They overlap: clips 900 and 901 are in every one of them, which is what
+    makes them the same footage dressed up repeatedly rather than a box set of
+    separate works. Disjoint clip lists are a box set and are saved.
+    """
+    return title(index, duration, segments=f"{index},900,901", source=source,
+                 chapters=chapters)
 
 
 # Verbatim from the Hancock Blu-ray, read off the disc on 2026-09-07. Two
@@ -62,237 +72,55 @@ REAL_DVD = [
 
 
 class TestRealDiscs(unittest.TestCase):
-    def test_a_film_yields_its_feature_alone(self):
-        chosen = choose(REAL_BLU_RAY)
-        self.assertTrue(chosen)
-        self.assertEqual([t.duration for t in chosen.titles], ["2:20:05"])
+    """Everything the scan reported, longest first. No title is left behind.
 
-    def test_the_extras_are_not_mistaken_for_features(self):
-        """An absolute "over ten minutes" would have taken four of these."""
-        over_ten = [t for t in REAL_BLU_RAY if t.seconds >= 600]
-        self.assertEqual(len(over_ten), 4, "which is why the rule is relative")
-        self.assertEqual(len(choose(REAL_BLU_RAY).titles), 1)
-
-    def test_a_dvd_yields_its_feature_alone(self):
-        self.assertEqual([t.duration for t in choose(REAL_DVD).titles],
-                         ["1:42:39"])
-
-    def test_expected_bytes_is_what_the_scan_said_they_weigh(self):
-        self.assertEqual(expected_bytes(choose(REAL_DVD)), 4_245_336_064)
-
-
-class TestARealProtectedDisc(unittest.TestCase):
-    """Hancock: four feature-length titles that are two films."""
-
-    def test_the_two_cuts_survive_and_the_copies_do_not(self):
-        chosen = choose(HANCOCK)
-        self.assertTrue(chosen)
-        self.assertEqual([t.source for t in chosen.titles],
-                         ["00002.mpls", "00001.mpls"])
-
-    def test_saving_all_four_would_write_every_frame_twice(self):
-        self.assertEqual(len(HANCOCK), 4)
-        self.assertEqual(len(choose(HANCOCK).titles), 2)
-
-    def test_the_obfuscation_playlists_are_rejected_on_their_structure(self):
-        """A hundred play items pointing at one clip is not a film."""
-        chosen = choose(HANCOCK + HANCOCK_DECOYS)
-        self.assertEqual([t.source for t in chosen.titles],
-                         ["00002.mpls", "00001.mpls"])
-
-    def test_the_decoys_alone_leave_nothing_to_save(self):
-        self.assertFalse(choose(HANCOCK_DECOYS))
-
-    def test_a_single_clip_title_is_not_mistaken_for_a_decoy(self):
-        """Plenty of real titles are one clip; DVDs report no segments at all."""
-        self.assertFalse(is_degenerate(title(0, "1:30:00", segments="123")))
-        self.assertFalse(is_degenerate(title(0, "1:30:00", segments="")))
-
-    def test_duplicates_are_dropped_before_the_decoy_count(self):
-        """Three cuts authored in pairs is six titles and two too many.
-
-        Counting before deduplicating would refuse a disc that is only
-        repeating itself.
-        """
-        disc = []
-        for i in range(3):
-            segs = f"{i}00,{i}01,{i}02,{i}03"
-            disc.append(title(i * 2, "1:30:00", segments=segs))
-            disc.append(title(i * 2 + 1, "1:30:00", segments=segs))
-        self.assertEqual(len(disc), 6)
-        self.assertTrue(choose(disc), "six titles, but only three films")
-        self.assertEqual(len(choose(disc).titles), 3)
-
-
-class TestPreferringTheRicherCopy(unittest.TestCase):
-    """A disc can offer the same footage twice with different track sets.
-
-    Hancock's feature comes as 23 streams and as 15 -- same runtime to the
-    frame, same seven audio tracks, fifteen subtitle tracks against seven.
-    Keeping whichever came first filed the poorer one about half the time.
+    MakeMKV has already applied its own minimum length to this list, and that
+    is the only filter in the pipeline. Nothing here re-judges it: a threshold
+    that could drop a trailer could drop the second film of a double bill, and
+    on 2026-09-08 it did, twice.
     """
 
-    def setUp(self):
-        segs = "1,2,3,4,5"
-        self.poor = title(0, "1:32:13", segments=segs, source="00003.mpls")
-        self.poor.streams = 15
-        self.rich = title(1, "1:32:13", segments=segs, source="00001.mpls")
-        self.rich.streams = 23
-
-    def test_the_richer_copy_wins_whichever_comes_first(self):
-        for order in ([self.poor, self.rich], [self.rich, self.poor]):
-            with self.subTest(first=order[0].source):
-                kept = distinct(order)
-                self.assertEqual([t.source for t in kept], ["00001.mpls"])
-
-    def test_only_one_survives(self):
-        self.assertEqual(len(distinct([self.poor, self.rich])), 1)
-
-    def test_titles_with_different_clip_lists_both_survive(self):
-        other = title(2, "1:42:14", segments="9,8,7")
-        kept = distinct([self.rich, other])
-        self.assertEqual(len(kept), 2)
-
-    def test_the_scan_order_is_kept(self):
-        """Order carries meaning downstream; the tie-break must not shuffle."""
-        a = title(0, "1:42:14", segments="9,8,7")
-        kept = distinct([a, self.poor, self.rich])
-        self.assertEqual([t.index for t in kept], [0, 1])
-
-    def test_titles_reporting_no_streams_still_deduplicate(self):
-        a = title(0, "1:30:00", segments="1,2")
-        b = title(1, "1:30:00", segments="1,2")
-        self.assertEqual(len(distinct([a, b])), 1)
-
-
-class TestDecoys(unittest.TestCase):
-    """Playlist obfuscation: many titles all cut to the feature's length."""
-
-    def setUp(self):
-        self.disc = [title(i, f"2:18:{i % 60:02d}") for i in range(40)]
-
-    def test_a_protected_disc_is_refused(self):
-        chosen = choose(self.disc)
-        self.assertFalse(chosen)
-        self.assertEqual(chosen.error_kind, model.ERR_DECOY_TITLES)
-
-    def test_it_says_what_the_operator_should_do(self):
-        self.assertIn("by hand", choose(self.disc).reason)
-        self.assertIn("40 titles", choose(self.disc).reason)
-
-    def test_nothing_is_selected_from_a_refused_disc(self):
-        self.assertEqual(choose(self.disc).titles, ())
-
-    def test_the_limit_is_where_the_policy_says(self):
-        five = [title(i, "1:30:00") for i in range(5)]
-        six = [title(i, "1:30:00") for i in range(6)]
-        self.assertTrue(choose(five), "five episodes is a box set")
-        self.assertFalse(choose(six), "six of the same length is not")
-
-    def test_a_stricter_limit_can_be_set(self):
-        two = [title(i, "1:30:00") for i in range(2)]
-        self.assertFalse(choose(two, SelectionPolicy(max_feature_titles=1)))
-
-
-class TestBoxSets(unittest.TestCase):
-    def test_episodes_of_similar_length_are_all_features(self):
-        disc = [title(i, f"0:45:{i:02d}") for i in range(4)]
-        self.assertEqual(len(choose(disc).titles), 4)
-
-    def test_a_feature_with_a_long_extra_still_takes_only_the_feature(self):
-        disc = [title(0, "2:00:00"), title(1, "1:00:00")]
-        self.assertEqual([t.duration for t in choose(disc).titles], ["2:00:00"])
-
-    def test_an_alternate_cut_is_kept(self):
-        disc = [title(0, "2:30:00"), title(1, "2:20:00")]
-        self.assertEqual(len(choose(disc).titles), 2)
-
-
-class TestNothingWorthSaving(unittest.TestCase):
-    def test_a_disc_of_short_clips_is_refused(self):
-        disc = [title(i, "0:03:00") for i in range(3)]
-        chosen = choose(disc)
-        self.assertFalse(chosen)
-        self.assertEqual(chosen.error_kind, model.ERR_NO_FEATURE)
-        self.assertIn("10 minutes", chosen.reason)
-
-    def test_the_floor_can_be_lowered_for_a_disc_of_shorts(self):
-        disc = [title(i, "0:03:00") for i in range(3)]
-        self.assertTrue(choose(disc, SelectionPolicy(min_feature_seconds=60)))
-
-    def test_an_empty_scan_is_refused_rather_than_guessed_at(self):
-        chosen = choose([])
-        self.assertFalse(chosen)
-        self.assertEqual(chosen.error_kind, model.ERR_NO_FEATURE)
-
-    def test_titles_with_no_duration_are_ignored(self):
-        disc = [title(0, ""), title(1, "1:30:00")]
-        self.assertEqual([t.duration for t in choose(disc).titles], ["1:30:00"])
-
-
-class TestCanWeDecide(unittest.TestCase):
-    """The question the operator actually needs answered."""
-
-    def test_one_feature_is_never_in_doubt(self):
-        chosen = choose([title(0, "1:40:00", segments="1,2,3", source="a")])
+    def test_a_film_disc_yields_its_feature_and_every_extra(self):
+        chosen = choose(REAL_BLU_RAY)
         self.assertTrue(chosen)
-        self.assertFalse(chosen.needs_operator)
+        self.assertEqual([t.duration for t in chosen.titles],
+                         ["2:20:05", "0:14:49", "0:13:09", "0:12:31",
+                          "0:08:56", "0:05:39", "0:02:01"])
 
-    def test_two_genuine_cuts_are_decided(self):
-        """Hancock: the cuts differ in which clips they use, not the order."""
-        self.assertTrue(choose(HANCOCK))
-        self.assertFalse(choose(HANCOCK).needs_operator)
+    def test_a_dvd_yields_its_feature_and_its_three_clips(self):
+        self.assertEqual([t.duration for t in choose(REAL_DVD).titles],
+                         ["1:42:39", "0:02:32", "0:02:32", "0:02:32"])
 
-    def test_the_same_clips_in_a_different_order_is_not_two_cuts(self):
-        disc = [
-            title(0, "1:50:00", segments="1,2,3,4,5", source="00800.mpls", chapters=12),
-            title(1, "1:50:00", segments="5,4,3,2,1", source="00801.mpls", chapters=12),
-        ]
-        chosen = choose(disc)
+    def test_a_double_feature_keeps_both_films(self):
+        """Verbatim from the "Firehead and Last Lives" DVD.
+
+        The shorter film is 87% of the longer, so the old 90% ratio dropped
+        it without a word, and both films spell their cell range the same way,
+        so the old duplicate filter dropped one of those too.
+        """
+        disc = [title(0, "1:23:43", segments="1-15"),
+                title(1, "1:35:43", segments="1-12")]
+        self.assertEqual([t.duration for t in choose(disc).titles],
+                         ["1:35:43", "1:23:43"])
+
+    def test_a_season_disc_keeps_every_episode(self):
+        self.assertEqual(len(choose([title(i, "0:45:00") for i in range(8)])
+                             .titles), 8)
+
+    def test_a_kids_disc_of_short_shorts_keeps_every_one(self):
+        self.assertEqual(len(choose([title(i, f"0:11:{i:02d}") for i in range(12)])
+                             .titles), 12)
+
+    def test_a_disc_with_no_timed_titles_is_the_one_refusal_left(self):
+        chosen = choose([title(0, "")])
         self.assertFalse(chosen)
-        self.assertTrue(chosen.needs_operator)
-        self.assertEqual(chosen.error_kind, model.ERR_AMBIGUOUS_TITLES)
-        self.assertIn("different order", chosen.reason)
+        self.assertEqual(chosen.error_kind, model.ERR_NO_FEATURE)
+        self.assertFalse(chosen.needs_operator, "there is nothing to help with")
 
-    def test_a_feature_length_title_with_one_chapter_is_doubted(self):
-        disc = [
-            title(0, "1:50:00", segments="1,2,3", source="a", chapters=14),
-            title(1, "1:49:00", segments="4,5,6", source="b", chapters=1),
-        ]
-        chosen = choose(disc)
-        self.assertFalse(chosen)
-        self.assertTrue(chosen.needs_operator)
-        self.assertIn("one chapter", chosen.reason)
+    def test_expected_bytes_is_what_the_scan_said_they_weigh(self):
+        self.assertEqual(expected_bytes(choose(REAL_DVD)),
+                         4_245_336_064 + 99_866_624 + 101_634_048 + 80_885_760)
 
-    def test_too_many_candidates_needs_a_person(self):
-        disc = [title(i, "1:50:00", segments=f"{i}a,{i}b,{i}c") for i in range(9)]
-        chosen = choose(disc)
-        self.assertTrue(chosen.needs_operator)
-        self.assertEqual(chosen.error_kind, model.ERR_DECOY_TITLES)
-
-    def test_a_disc_with_nothing_on_it_does_not_need_a_person(self):
-        """There is nothing for them to help with."""
-        chosen = choose([title(0, "0:03:00")])
-        self.assertFalse(chosen)
-        self.assertFalse(chosen.needs_operator)
-
-    def test_the_candidates_are_handed_over_to_choose_between(self):
-        disc = [title(i, "1:50:00", segments=f"{i}a,{i}b", source=f"0080{i}.mpls",
-                      chapters=12) for i in range(9)]
-        chosen = choose(disc)
-        self.assertEqual(len(chosen.candidates), 9)
-        self.assertIn("00800.mpls", chosen.reason)
-        self.assertIn("1:50:00", chosen.reason)
-        self.assertIn("12 chapters", chosen.reason)
-        self.assertIn("MakeMKV", chosen.reason, "and what to do about it")
-
-    def test_a_long_candidate_list_is_trimmed(self):
-        disc = [title(i, "1:50:00", segments=f"{i}a,{i}b") for i in range(30)]
-        listed = choose(disc).reason
-        self.assertIn("...and 22 more", listed)
-
-    def test_candidates_are_carried_even_when_the_disc_is_decided(self):
-        self.assertEqual(len(choose(HANCOCK).candidates), 2)
 
 
 class TestSegmentsSpelling(unittest.TestCase):
@@ -305,22 +133,9 @@ class TestSegmentsSpelling(unittest.TestCase):
     def test_a_dvd_cell_range(self):
         self.assertEqual(len(segments(title(0, "1:00:00", segments="1-28"))), 28)
 
-    def test_a_range_is_not_mistaken_for_a_decoy(self):
-        """28 distinct cells, spelled as a range, is an ordinary DVD title."""
-        self.assertFalse(is_degenerate(title(0, "1:42:39", segments="1-28")))
-
     def test_nothing_reported_is_handled(self):
         self.assertEqual(segments(title(0, "1:00:00")), [])
 
-
-class TestDescribe(unittest.TestCase):
-    def test_it_names_what_the_operator_will_see_in_makemkv(self):
-        line = describe([title(0, "1:42:14", segments="1,2,3",
-                               source="00002.mpls", chapters=16)])
-        self.assertIn("00002.mpls", line)
-        self.assertIn("1:42:14", line)
-        self.assertIn("16 chapters", line)
-        self.assertIn("3 of 3 clips distinct", line)
 
 
 class TestTellingTheCutsApart(unittest.TestCase):
@@ -333,8 +148,11 @@ class TestTellingTheCutsApart(unittest.TestCase):
     """
 
     def setUp(self):
+        # Every title is copied now, so the two cuts arrive as four titles:
+        # each authored twice. The pair to compare is one of each cut.
         self.chosen = choose(HANCOCK).titles
-        self.extended, self.theatrical = self.chosen
+        self.extended = next(t for t in self.chosen if t.duration == "1:42:14")
+        self.theatrical = next(t for t in self.chosen if t.duration == "1:32:13")
 
     def test_the_two_cuts_share_a_backbone(self):
         shared = set(segments(self.extended)) & set(segments(self.theatrical))
@@ -346,7 +164,8 @@ class TestTellingTheCutsApart(unittest.TestCase):
         self.assertEqual(len(b - a), 9)
 
     def test_they_read_as_cuts_of_one_film_not_two_films(self):
-        self.assertEqual(relationship(self.chosen), CUT_VARIANTS)
+        self.assertEqual(relationship([self.extended, self.theatrical]),
+                         CUT_VARIANTS)
         self.assertAlmostEqual(shared_ratio(self.extended, self.theatrical),
                                10 / 19, places=2)
 
@@ -370,6 +189,7 @@ class TestTellingTheCutsApart(unittest.TestCase):
         """A DVD that reports nothing must not be guessed at."""
         disc = [title(0, "1:40:00"), title(1, "1:38:00")]
         self.assertEqual(relationship(disc), SEPARATE_WORKS)
+
 
 
 class TestMatchingFilesToTitles(unittest.TestCase):

@@ -192,10 +192,6 @@ class BackupRunner:
         self._policy = policy or OutcomePolicy(
             size_ratio_floor=request.cfg.size_ratio_floor,
             size_ratio_ceiling=request.cfg.size_ratio_ceiling)
-        self._selection_policy = selection.SelectionPolicy(
-            feature_ratio=request.cfg.feature_ratio,
-            min_feature_seconds=request.cfg.min_feature_seconds,
-            max_feature_titles=request.cfg.max_feature_titles)
 
         self._thread: threading.Thread | None = None
         self._process: ProcessHandle | None = None
@@ -313,7 +309,7 @@ class BackupRunner:
 
         # 5. Which of them to save -- and whether this disc can be done at all
         #    without a human. See makemkv.selection.
-        chosen = selection.choose(self._titles, self._selection_policy)
+        chosen = selection.choose(self._titles)
         if not chosen:
             self._fail(chosen.reason, chosen.error_kind)
             return

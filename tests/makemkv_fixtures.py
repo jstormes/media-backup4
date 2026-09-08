@@ -194,6 +194,15 @@ TINFO:3,11,0,"80885760"
 """
 
 #: The same scan with the disc-level records stripped, for the fallback path.
+#: The same disc cut to its feature alone. Every title is copied now, so a
+#: four-title scan means four save runs; tests whose subject is judging one
+#: copy use this instead of scripting four identical processes.
+ONE_TITLE_SCAN = "\n".join(
+    line for line in DVD_SCAN.splitlines()
+    if not (line.startswith("TINFO:1,") or line.startswith("TINFO:2,")
+            or line.startswith("TINFO:3,"))).replace("TCOUNT:4", "TCOUNT:1")
+
+
 DVD_SCAN_NO_CINFO = "\n".join(
     line for line in DVD_SCAN.splitlines() if not line.startswith("CINFO:"))
 

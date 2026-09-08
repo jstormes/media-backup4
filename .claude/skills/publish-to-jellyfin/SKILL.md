@@ -60,31 +60,92 @@ Drive from `discs[].titles[]` where `output_file` is set. That field was
 reconciled against the files after the run and is the link from metadata to
 bytes.
 
-The `data/` directory can hold **more** files than that. MakeMKV saves by
-minimum length, which cannot exclude a second playlist of the same runtime, so
-a disc offering its feature twice writes both. Leave the unclaimed files in the
-archive and name them in the report.
+**Expect many titles per disc, and expect most of them to be junk.** Since
+2026-09-08 the ripper copies *everything* MakeMKV reports and makes no
+judgement about what any title is -- it stopped guessing because guessing lost
+two films, and sorting the pile is now this skill's job. A film disc that used
+to arrive as one file now arrives as anywhere from two to thirty-nine, and
+they are a mix of:
+
+- the feature, or **two features** on a double bill, or a season's episodes;
+- alternate cuts of the same film;
+- genuine extras -- featurettes, deleted scenes, trailers;
+- **the same content authored twice.** A Blu-ray routinely carries a playlist
+  twice with different track sets. Hancock's 39 titles are two films, each
+  authored twice, plus extras.
+- **slices of the feature.** A Blu-ray offers individual clips of the film as
+  titles in their own right. Hancock lists clip 123 alone at 5:50, clip 125 at
+  11:01, and fifteen more. These are not extras and must never be published;
+  they are the film, cut up.
+
+Publish the feature or features, publish the extras worth keeping, and leave
+the rest in the archive. Name everything you did not publish in the report so
+the operator can see what was decided rather than discovering it later.
+
+### Telling the pile apart
+
+The clip lists do most of the work, and `media_backup.makemkv.selection` has
+the helpers. **On a Blu-ray the segments map names global clip files and can
+be compared across titles. On a DVD it is a cell range local to its own title
+and comparing it across titles is meaningless** -- every DVD title's range
+starts at 1, so two unrelated films both report `1-12`. Never conclude
+anything from two DVD titles sharing a range.
+
+For a Blu-ray, in order:
+
+1. **Duplicates.** Same clip list *and* same duration is the same content
+   authored twice. Keep the one with the higher `streams` -- the copies are
+   not interchangeable, Hancock's pair carry fifteen subtitle tracks against
+   seven -- and say in the report that you did.
+2. **Fragments.** A title whose clip set is a strict subset of a longer kept
+   title's is a slice of it. Drop it. This is what takes 28 GB off Hancock.
+3. **Cuts or separate works.** `relationship()` on what remains. It requires
+   each cut to carry clips the other lacks, which is what seamless branching
+   is, so a subset relationship reads as separate works rather than cuts.
+
+For a DVD none of that is available, so use duration, chapter count and the
+disc label, and ask. The label is often the giveaway:
+`FIREHEAD_AND_LAST_LIVES` names both films on the disc, and the two
+feature-length titles are them.
+
+**Two feature-length titles on a DVD are usually two films, not two cuts.**
+That is the case the old ripper got wrong twice.
 
 Backups made before 2026-09-07 can hold surplus copies: compare the claimed
 file against any unclaimed one of the same runtime with
 `ffprobe -v error -show_entries stream=codec_type -of csv=p=0`. They are the
 same footage with different track sets, and the recorded one is not always the
-better equipped — Hancock's pair carry fifteen and seven subtitle tracks. Stage
-the richer one and say in the report that you did. Later backups save one file
-per chosen title and pick the richer copy themselves.
+better equipped. Stage the richer one and say in the report that you did.
 
 ## 3. Work out what the disc holds
 
-Longest title is the feature. Shorter ones are extras.
+After step 2 has thrown out the duplicates and the fragments, what remains is
+content. The longest title is *usually* the feature, and that is a starting
+point rather than a rule — a disc can hold two films, a season of episodes,
+or a dozen twenty-minute shorts, and on those discs "the longest" means
+nothing.
 
-Two or more feature-length titles are either **cuts of one film** or
-**separate works**, and the clip lists say which: cuts share a backbone of
-segments, separate works share nothing. `media_backup.makemkv.selection` has
-`relationship()` and `shared_ratio()` — use them rather than eyeballing
-durations.
+Read the shape of what is left:
 
-- Cuts of one film → one folder, one file per cut, version labels.
-- Separate works, several discs, similar runtimes → a series.
+- **One long title, the rest much shorter** → a film and its extras. The
+  ordinary case.
+- **Two long titles** → two films, or two cuts of one. `relationship()`
+  decides it on a Blu-ray; on a DVD the clip lists cannot decide it, so use
+  the disc label and ask. Cuts of one film → one folder, one file per cut,
+  version labels. Two films → two folders.
+- **Many titles of similar length, none dominant** → episodes, or a kids'
+  disc of shorts. This is a series, and you need season and episode numbers
+  from the operator. Runtime clusters around 22, 45 or 60 minutes are the
+  giveaway; so is a disc label naming a show rather than a film.
+
+`media_backup.makemkv.selection` has `relationship()` and `shared_ratio()` —
+use them rather than eyeballing durations, and remember they are only
+meaningful on a Blu-ray.
+
+**Episode order is not in the data.** MakeMKV's title order usually follows
+disc order, which usually follows broadcast order, and "usually" is not good
+enough to number episodes by. Ask, or match runtimes against a published
+episode list.
 
 ## 4. Ask for what the disc cannot say
 
@@ -211,8 +272,13 @@ files are not noticed until it does.
 
 Check every one of these before reporting success:
 
-- Every title with an `output_file` has a staged file.
-- Every staged file resolves back to one such title.
+- Every staged file resolves back to exactly one title with an `output_file`.
+  Not the converse: most titles are *not* staged now, because the ripper
+  copies everything and step 2 discards the duplicates, the fragments and the
+  junk. Checking that every title has a file would fail on every disc.
+- Every title you did not stage is accounted for in the report, by name and
+  reason. This is the check that replaces the one above, and it is the one
+  that catches a film left behind.
 - Every staged media file has a link count above 1 (`stat -c '%h %n'`) —
   proving a hardlink rather than a copy.
 - Every file name begins with its parent folder's name.
@@ -223,8 +289,10 @@ Check every one of these before reporting success:
   on exFAT, where it cannot set the metadata it would normally verify.
 
 Report per collection: what was staged and under what name, what was asked and
-answered, any surplus files left in the archive, and anything skipped with the
-reason.
+answered, and **every title left in the archive with the reason** — duplicate
+of another title, fragment of the feature, extra not worth publishing, junk.
+A reader should be able to tell from the report alone that nothing was lost,
+without opening the collection.
 
 ## 9. Prove the copy, then reclaim the space
 

@@ -707,7 +707,7 @@ class MainWindow:
         parts = [f"{len(disc.titles)} title{plural}"]
         main = disc.main_title
         if main is not None and main.duration:
-            parts.append(f"main feature {main.duration}")
+            parts.append(f"longest {main.duration}")
         return ", ".join(parts)
 
     def _show_disc_buttons(self, offered: tuple[str, ...]) -> None:

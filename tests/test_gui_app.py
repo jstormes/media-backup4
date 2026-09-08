@@ -546,7 +546,7 @@ class TestBackupFlow(WindowTestCase):
 
         self.assertEqual(self.row(self.disc, "name"), "Fresh Horses")
         self.assertIn("2 titles", self.window._detail.cget("text"))
-        self.assertIn("main feature 1:42:39", self.window._detail.cget("text"))
+        self.assertIn("longest 1:42:39", self.window._detail.cget("text"))
 
     def test_the_drive_card_uses_the_real_name_too(self):
         self.runner.emit(events.JobEvent(
