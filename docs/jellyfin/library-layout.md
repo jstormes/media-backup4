@@ -9,6 +9,12 @@ Rules taken from the Jellyfin documentation on 2026-09-07:
 [Shows](https://jellyfin.org/docs/general/server/media/shows/). Where a rule is
 quoted it is quoted exactly, because most of them are unforgiving.
 
+Jellyfin accepts several shapes for most of these. The one that matters is the
+one **the existing library already uses**, because a publisher writing a
+different legal shape produces a library that is inconsistent rather than
+wrong. "In the library as it stands" below records what that is, measured on
+2026-09-07 against 235 films and 1,665 episodes.
+
 ## Films
 
 One folder per film, and **the file name must begin with the folder name**:
@@ -61,6 +67,12 @@ The accepted names are `behind the scenes`, `deleted scenes`, `interviews`,
 `scenes`, `samples`, `shorts`, `featurettes`, `clips`, `other`, `extras`,
 `trailers`, `theme-music`, `backdrops`.
 
+**The library uses the flat `extras/` for all of them** -- 176 of 235 films
+have one, and none use the semantic folders. Which is the honest choice for
+this pipeline anyway: nothing on a disc says whether a 4-minute title is a
+deleted scene or a featurette, so sorting them into semantic folders would
+mean guessing.
+
 ### Films split across files
 
 Supported part keywords are `cd`, `dvd`, `part`, `pt`, `disc`, `disk`, with a
@@ -86,6 +98,10 @@ Shows/
 * One file holding two episodes is `S01E02-E03`.
 * An episode split across files uses the same part keywords as films:
   `Series Name (2025) S01E01-part-1.mkv`.
+
+**In the library as it stands the episode file is bare `S01E01.mkv`**, with no
+series name -- 1,665 of them. Both forms are legal and Jellyfin matches either;
+the bare form is the one to write here.
 
 ## Linking to online metadata
 
@@ -135,7 +151,7 @@ Hancock (2008) [imdbid-tt0448157]/
 
 Which is why the next section is usually the better answer.
 
-### NFO files, and why they are probably what this project should write
+### NFO files, and why this project should not write them
 
 A sidecar XML file carries the same identifiers without putting them in every
 filename:
@@ -158,17 +174,28 @@ The format is Kodi's. Identifiers are `uniqueid` elements with a `type`:
 </movie>
 ```
 
-Two properties make this the natural fit for a publishing step:
+Two properties look like a natural fit for a publishing step:
 
 > It's currently not possible to disable .nfo metadata. Local metadata will
 > always be fetched and has priority over remote metadata providers like TMDb.
 
 So an NFO is authoritative -- whatever it says wins, and there is no library
 setting to turn on or forget. And it keeps the filenames plain, which matters
-here because version labels and provider tags fight for the same filename.
+because version labels and provider tags fight for the same filename.
 
-The trade is that it is another file to write correctly, and being
-authoritative it is also authoritatively wrong if the id is wrong.
+**The live library contains no NFO files at all.** Zero, across 235 films. It
+pins metadata with `[imdbid-tt…]` in the folder and file names, and 228 of the
+235 carry one. An earlier draft of this document recommended NFOs on the
+reasoning above; that recommendation was made without looking at the library
+it was aimed at, and is withdrawn.
+
+Write the bracket tag, and match what is there. The reasoning above is not
+wrong about NFOs -- they really are authoritative and really do keep filenames
+plain -- but introducing a second metadata mechanism into a library that
+consistently uses one buys a cleaner filename at the cost of two ways for a
+title to be described, which is worse. Being authoritative also means an NFO
+is authoritatively wrong when the id is wrong, and this pipeline cannot derive
+the id itself.
 
 ### Finding the ids
 
@@ -199,6 +226,62 @@ have been expressed at all in the format this project produced before
 Subtitles are muxed into the `.mkv` (PGS from a Blu-ray, VobSub and converted
 closed captions from a DVD -- see `../makemkv/track-selection.md`), so no
 sidecar `.srt` or `.sup` files are needed and none are written.
+
+## In the library as it stands
+
+Measured over SSH on 2026-09-07, on **nas2** at
+`/srv/dev-disk-by-uuid-78AA-077A` -- 7.3T, 4.3T used. That path is both the
+media root and the container's home: `docker-compose.yml` beside it mounts
+`./:/media`, with `Backups/jellyfin_config` and `Backups/jellyfin_cache` as
+`/config` and `/cache`.
+
+```
+Movies/A Knight's Tale (2001) [imdbid-tt0183790]/
+├── A Knight's Tale (2001) [imdbid-tt0183790].mkv    <- repeats the folder name
+├── extras/
+│   └── A Knight's Tale-F1 T07-8.mkv
+├── folder.jpg  logo.png  landscape.jpg  backdrop.jpg
+└── *.trickplay/
+
+Shows/Almost Human (2013) [imdbid-tt2654580]/
+└── Season 01/
+    └── S01E01.mkv
+```
+
+| Convention | Holds for |
+|---|---|
+| `[imdbid-tt…]` in the folder name | 228 of 235 films, every series |
+| Main file repeats the folder name exactly | 211 of 235 |
+| An `extras/` folder | 176 of 235 |
+| Two or more cuts in one folder | 20 of 235 |
+| `.nfo` sidecars | **0** |
+| Episodes named `S01E01.mkv` | 1,665 files |
+
+The artwork (`folder.jpg`, `logo.png`, `landscape.jpg`, `backdrop.jpg`) and
+the `.trickplay` directories are written by Jellyfin, not by whatever put the
+media there. A publisher should not create them.
+
+Version labels are where the library is least consistent. The `<folder name>
+- <label>` shape is honoured, but the labels are free-form: `- Directors Cut`,
+`- Final Cut`, `- [DVD]`, and `- 2.mkv`. That last is a fallback for "the
+second cut, name unknown", which is exactly the case a disc presents -- the
+edition name lives in the BD-J menu graphics and in no field.
+
+### Permissions
+
+The tree is `root:root` mode `777`, and the container runs as PUID/PGID 1001.
+Anything written needs to be world-readable; ownership does not matter.
+
+### Faults worth repairing
+
+A malformed provider tag is **silently ignored** -- the title then matches on
+name alone, which looks like Jellyfin being bad at matching rather than like a
+typo. Present in the library:
+
+* `[indbid-…]` and `[imbdid-…]` -- one film each, letters transposed.
+* `[tt0103359episodes]` on Batman Animated Series -- no `imdbid-` prefix.
+* 5 films with no tag at all, and 24 whose main file does not repeat the
+  folder name.
 
 ## What this project produces, and the distance to the above
 
@@ -257,9 +340,22 @@ The disc's own name is not always a legal or sensible filename. "Spider-Man:
 Across The Spider-Verse" carries a colon, which is illegal on NTFS and exFAT
 and awkward everywhere. Jellyfin's own examples replace it with " - ".
 
-## Not decided yet
+## Publishing is a transfer, not a link
 
-Whether publishing is a copy, a hardlink or a symlink into the Jellyfin
-library. Hardlinks keep one copy of the bytes and need the archive and the
-library on one filesystem -- which `config.validate` already requires of
-`media_path` and `finished_path`, so the precedent exists.
+This was open while the library's location was unknown. It is not open any
+more: the library is on **nas2** and the archive is on the ripping machine's
+local NVMe, so a hardlink or a symlink cannot span them. Publishing copies
+bytes across a network.
+
+Which settles how, too. The archive stays local -- `config.validate` requires
+`finished_path` and `cancelled_path` to share a filesystem with `media_path`,
+because finishing a collection is an atomic rename rather than a
+multi-gigabyte copy, and that cannot hold if `media_path` is a network mount.
+Nor should it: a mounted share that goes away mid-rip blocks in
+uninterruptible sleep, where neither `config.validate` nor the job watchdogs
+can see it.
+
+So: rip local, then push. `rsync` over SSH rather than a mount, because a
+failed transfer is then an exit code to retry rather than a wedged job, and
+`--partial --append-verify` resumes a 40 GB title instead of restarting it.
+The step is idempotent, so re-running after any failure is safe.
