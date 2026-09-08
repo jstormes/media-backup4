@@ -20,6 +20,9 @@ or send it to a file with `MEDIA_BACKUP_LOG_FILE=app.log`.
 - **tkinter** (included with Python on most systems)
 - **PyGObject** (`gi`) — used for the udisks2 D-Bus API
 - **udisks2** running on the system
+- **bubblewrap** (`bwrap`) — confines each `makemkvcon` run to one drive.
+  Optional: without it every run probes every drive, including one that is
+  mid-rip. See `docs/makemkv/robot-mode.md`.
 
 PyGObject is a system package, not a pip install. On Debian/Ubuntu:
 `sudo apt install python3-gi`. Note that a plain virtualenv will *not*
@@ -33,7 +36,7 @@ dependency; `config.py` refuses to start a backup without it.
 On a fresh Debian/Ubuntu machine:
 
 ```bash
-sudo ./install-requirements.sh    # tkinter, JRE, then checks everything
+sudo ./install-requirements.sh    # tkinter, JRE, bubblewrap, then checks everything
 sudo ./install-makemkv.sh         # builds MakeMKV into /usr/local
 sudo ./setup-backup-drive.sh      # mounts the backup drive at media_path
 sudo cp *.rules /etc/udev/rules.d/ && sudo reboot

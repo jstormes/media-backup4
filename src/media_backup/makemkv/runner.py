@@ -29,8 +29,8 @@ from typing import Callable, Iterator, Protocol
 
 from .. import events, mkv, model
 from ..config import Config, has_room_for
-from . import command, inspect as layouts, messages, selection
-from .enumeration import DriveIndex, Resolution, resolve
+from . import command, inspect as layouts, isolation, messages, selection
+from .enumeration import DriveIndex, Resolution, parse_drives, resolve
 from .outcome import BackupObservation, OutcomePolicy, Verdict, judge
 from .records import (ATTR_CHAPTER_COUNT, ATTR_COMMENT, ATTR_DURATION,
                       ATTR_NAME, ATTR_OUTPUT_FILE, ATTR_SEGMENTS_MAP,
@@ -354,12 +354,26 @@ class BackupRunner:
 
     def _resolve_index(self) -> Resolution:
         req = self.request
-        argv = command.enumerate_argv(req.cfg)
+        argv = command.enumerate_argv(req.cfg, req.device)
+        isolated = bool(isolation.prefix(req.cfg, req.device))
 
         def enumerate_once() -> list[str]:
             return self._run_to_completion(argv, "drive enumeration")
 
-        drives = self._drive_index.drives(enumerate_once)
+        def read_drives(*, force: bool = False):
+            """This job's drive list, shared with other jobs only if it can be.
+
+            An isolated enumeration sees one drive -- its own -- so another
+            job's copy would resolve to device_not_found. The shared list
+            exists to stop N jobs each probing every drive, and isolation
+            already stops that: an isolated probe touches one drive, so
+            running it per job costs nothing to anyone else.
+            """
+            if isolated:
+                return parse_drives(enumerate_once())
+            return self._drive_index.drives(enumerate_once, force=force)
+
+        drives = read_drives()
         resolution = resolve(drives, req.device, req.expected_label)
 
         # A drive that is still spinning up is worth waiting for -- and the
@@ -370,7 +384,7 @@ class BackupRunner:
                and attempts < 3 and not self._cancelled.is_set()):
             attempts += 1
             self._sleep(2.0)
-            drives = self._drive_index.drives(enumerate_once, force=True)
+            drives = read_drives(force=True)
             resolution = resolve(drives, req.device, req.expected_label)
         return resolution
 
@@ -383,7 +397,7 @@ class BackupRunner:
         2026-09-06 reads ``DVD_VIDEO`` on the label and "Fresh Horses" here.
         The scan already fetched them; they were simply being dropped.
         """
-        argv = command.info_argv(self.request.cfg, index)
+        argv = command.info_argv(self.request.cfg, index, self.request.device)
         current: dict[int, model.Title] = {}
         streams: dict[int, set[int]] = {}
         for line in self._run_to_completion(argv, "disc scan"):
@@ -476,7 +490,7 @@ class BackupRunner:
     def _save_one(self, index: int, title: model.Title,
                   obs: BackupObservation, log, started: float) -> int:
         req = self.request
-        argv = command.mkv_argv(req.cfg, index, req.dest, title.index)
+        argv = command.mkv_argv(req.cfg, index, req.dest, title.index, req.device)
 
         try:
             process = self._spawn(argv)

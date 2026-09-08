@@ -17,6 +17,8 @@ import shutil
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from .makemkv import isolation
+
 ENV_VAR = "MEDIA_BACKUP_CONFIG"
 DEFAULT_FILENAME = "config.json"
 
@@ -54,6 +56,13 @@ class Config:
     #: makemkvcon's stdout is a pipe, which libc may block-buffer. This only
     #: affects how smoothly progress moves, never a verdict.
     use_stdbuf: bool = True
+    #: Wrap each makemkvcon run so it sees only the drive it was asked about.
+    #: MakeMKV probes every drive on the machine at engine startup whatever
+    #: source it is given, which reaches into whichever drive is mid-rip. See
+    #: makemkv/isolation.py. Best-effort: a run whose drive cannot be isolated
+    #: goes ahead unisolated rather than failing.
+    isolate_drives: bool = True
+    bwrap: Path = Path("/usr/bin/bwrap")
     #: 0 means one job per drive with no cap.
     max_concurrent_jobs: int = 0
     #: Headroom required beyond the disc size before a rip may start.
@@ -190,6 +199,9 @@ def validate(cfg: Config) -> list[Problem]:
     if not cfg.makemkvcon.is_file() or not os.access(cfg.makemkvcon, os.X_OK):
         problems.append(Problem(ERROR,
             f"makemkvcon not found or not executable: {cfg.makemkvcon}"))
+
+    for text in isolation.problems(cfg):
+        problems.append(Problem(WARNING, text))
 
     if cfg.use_stdbuf and shutil.which("stdbuf") is None:
         problems.append(Problem(WARNING,

@@ -55,6 +55,15 @@ mapfile -t SR < <(ls /dev/sr* 2>/dev/null)
 [[ ${#SR[@]} -gt 0 ]] && ok "${#SR[@]} drives: ${SR[*]}" || bad "no /dev/sr* devices"
 id -nG | tr ' ' '\n' | grep -qx cdrom && ok "in the cdrom group" || bad "not in the cdrom group"
 
+# Each makemkvcon run is wrapped so it can only open its own drive's sg node;
+# MakeMKV probes every drive otherwise, mid-rip or not. See
+# src/media_backup/makemkv/isolation.py.
+if command -v bwrap >/dev/null && bwrap --dev-bind / / -- true 2>/dev/null; then
+    ok "bwrap works -- runs are confined to one drive"
+else
+    warn "no working bwrap -- every run will probe every drive"
+fi
+
 # Two identical drives with no real serial collapse into one udisks2 drive
 # object, and then Drive.MediaAvailable reports the wrong drive's state.
 say "Drive object collision"

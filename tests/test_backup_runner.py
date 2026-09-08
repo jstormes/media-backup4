@@ -11,9 +11,12 @@ import threading
 import unittest
 from pathlib import Path
 
+from unittest import mock
+
 from media_backup import events, model
 from media_backup.config import Config
-from media_backup.makemkv import outcome
+from media_backup.makemkv import isolation, outcome
+from media_backup.makemkv.enumeration import DriveIndex
 from media_backup.makemkv.runner import BackupRequest, BackupRunner
 
 from . import makemkv_fixtures as fx
@@ -144,7 +147,10 @@ class RunnerTestCase(unittest.TestCase):
         # is content to find an empty one already there.
         self.dest = self.root / "data"
         self.dest.mkdir()
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, use_stdbuf=False)
+        # isolate_drives off: the sandbox is about real drives, and these
+        # tests never spawn a process. tests/test_makemkv_isolation.py has it.
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0,
+                          use_stdbuf=False, isolate_drives=False)
 
     def request(self, **kw):
         base = dict(
@@ -311,7 +317,8 @@ class TestFailures(RunnerTestCase):
         self.assertIn("not empty", h.final.verdict.reason)
 
     def test_insufficient_space_is_refused_without_touching_the_drive(self):
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=10**18)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=10**18,
+                          isolate_drives=False)
         h = Harness([fx.ENUMERATION_LINES])
         self.run_job(h, self.request(cfg=self.cfg))
         self.assertEqual(h.final.error_kind, model.ERR_NO_SPACE)
@@ -409,7 +416,7 @@ class TestWatchdogs(RunnerTestCase):
 
 class TestTitleScan(RunnerTestCase):
     def test_records_the_title_inventory(self):
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, isolate_drives=False)
         h = self.scripted(scan=fx.DISC_SCAN)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
@@ -427,7 +434,7 @@ class TestTitleScan(RunnerTestCase):
         The volume label is a generic stamp; MakeMKV names the disc anyway,
         and the scan was already fetching it and dropping it on the floor.
         """
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, isolate_drives=False)
         h = self.scripted(scan=fx.DVD_SCAN)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
@@ -440,7 +447,7 @@ class TestTitleScan(RunnerTestCase):
 
     def test_identification_arrives_before_the_copy_starts(self):
         """An hour into a copy is too late to stop saying "DVD_VIDEO"."""
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, isolate_drives=False)
         h = self.scripted(scan=fx.DVD_SCAN)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
@@ -453,7 +460,7 @@ class TestTitleScan(RunnerTestCase):
 
     def test_a_disc_with_no_cinfo_is_named_after_its_feature(self):
         """CINFO:2 is not established for DVDs, so there is a fallback."""
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, isolate_drives=False)
         h = self.scripted(scan=fx.DVD_SCAN_NO_CINFO)
         h.on_line = lambda proc, line: self.make_output()
         self.run_job(h, self.request(cfg=self.cfg))
@@ -530,7 +537,7 @@ class TestTitleSelection(RunnerTestCase):
     def test_the_decoy_threshold_is_configurable(self):
         """A box set of six episodes is not a protected disc."""
         self.cfg = Config(media_path=self.root, min_free_margin_bytes=0,
-                          use_stdbuf=False, max_feature_titles=40)
+                          use_stdbuf=False, max_feature_titles=40, isolate_drives=False)
         h = self.scripted(scan=fx.DECOY_SCAN)
         h.on_line = lambda proc, line: self.make_output(count=40)
         self.run_job(h, self.request(cfg=self.cfg))
@@ -574,7 +581,8 @@ class TestRobustness(RunnerTestCase):
 
     def test_log_is_truncated_rather_than_growing_without_bound(self):
         """A read-error storm can produce an enormous log."""
-        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, max_log_bytes=200)
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0,
+                          max_log_bytes=200, isolate_drives=False)
         noisy = ['MSG:2003,0,0,"read error at %d","x"' % i for i in range(500)]
         noisy.append('MSG:5081,0,0,"Backup done.","Backup done."')
         h = Harness([fx.ENUMERATION_LINES, fx.DVD_SCAN.splitlines(), noisy])
@@ -585,6 +593,65 @@ class TestRobustness(RunnerTestCase):
         self.assertLess(len(log), 2000)
         self.assertEqual(h.final.observation.read_error_count, 500,
                          "counting is unaffected by log truncation")
+
+
+class TestIsolatedJobsDoNotShareADriveList(RunnerTestCase):
+    """An isolated enumeration is about one drive, so it cannot be lent out.
+
+    The shared DriveIndex exists so a round of jobs runs one enumeration
+    between them instead of N, each of which probes every drive. Isolation
+    removes that cost -- a sandboxed probe touches one drive -- and makes the
+    sharing wrong: a list built inside sr0's sandbox names only sr0, and sr1's
+    job would resolve it to device_not_found and never start.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.cfg = Config(media_path=self.root, min_free_margin_bytes=0,
+                          use_stdbuf=False, isolate_drives=True)
+        # A stand-in for the real sandbox: this machine's /dev decides what
+        # the real one produces, and a test may not depend on that.
+        patcher = mock.patch.object(isolation, "prefix",
+                                    lambda cfg, device: ["/bin/sh", "--"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.shared = DriveIndex()
+
+    def run_isolated(self, device, label, enumeration):
+        # A destination per job, as the store gives every disc its own. Two
+        # jobs sharing one would fail the not-empty check, which is a real
+        # rule about real discs and nothing to do with what is under test.
+        self.dest = self.root / f"data{Path(device).name}"
+        self.dest.mkdir(exist_ok=True)
+        harness = Harness([enumeration.splitlines(),
+                           fx.DVD_SCAN.splitlines(),
+                           fx.MKV_SUCCESS_ONE.splitlines()])
+        harness.on_line = lambda proc, line: self.make_output()
+        runner = BackupRunner(
+            self.request(cfg=self.cfg, device=device, expected_label=label,
+                         dest=self.dest,
+                         log_path=self.root / "logs" / f"{Path(device).name}.log"),
+            harness.emit, spawn=harness.spawn, clock=harness.clock,
+            ejector=harness.eject, drive_index=self.shared)
+        runner.start()
+        runner.join(timeout=10)
+        return harness
+
+    def test_each_job_enumerates_inside_its_own_sandbox(self):
+        first = self.run_isolated(fx.SR0, fx.SR0_LABEL, fx.ISOLATED_SR0)
+        second = self.run_isolated(fx.SR1, fx.SR1_LABEL, fx.ISOLATED_SR1)
+
+        self.assertEqual(first.final.verdict.outcome, outcome.SUCCESS)
+        self.assertEqual(second.final.verdict.outcome, outcome.SUCCESS,
+                         "sr1 resolved its own drive, not the list sr0 made")
+        self.assertEqual(len(second.argvs), 3,
+                         "enumerate, scan, save -- it got past resolving")
+
+    def test_the_isolated_disc_index_is_the_sandbox_s_own(self):
+        """Index 0 for sr1, which is index 1 when every drive is listed."""
+        harness = self.run_isolated(fx.SR1, fx.SR1_LABEL, fx.ISOLATED_SR1)
+        saving = [a for a in harness.argvs if "mkv" in a][0]
+        self.assertIn("disc:0", saving)
 
 
 if __name__ == "__main__":

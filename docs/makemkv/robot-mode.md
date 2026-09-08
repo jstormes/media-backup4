@@ -36,7 +36,12 @@ drive-firmware mode. Ignore it.
 **Prefer `dev:` over `disc:` for anything targeting a specific drive.** MakeMKV
 indices are assigned per scan and are not stable across drive hotplug; the
 device node is. `disc:` is fine for the enumeration idiom below because it
-targets no real drive.
+targets no real drive. Note that `backup` and `mkv` accept only `disc:N`, so
+this project resolves a device to an index immediately before each run.
+
+**Naming a drive does not stop MakeMKV touching the others.** See
+[Every run probes every drive](#every-run-probes-every-drive) — the source
+argument decides which drive a command *works on*, not which drives it opens.
 
 ## Switches
 
@@ -53,7 +58,8 @@ binary. Do not conclude a switch is missing because help omits it.
 | `--cache=<MB>` | **Verified working** | Read-cache size. |
 | `--minlength=<sec>` | Present, not directly exercised | Title-length floor. Default is **120 s** — observed in messages: *"has length of 12 seconds which is less than minimum title length of 120 seconds"*. |
 | `--decrypt` | Present, not directly exercised | Decrypt video during `backup`. Corresponds to `AP_BackupFlagDecryptVideo=1`. |
-| `--directio`, `--noscan` | Present in binary | Not exercised. |
+| `--directio` | Present in binary | Not exercised. |
+| `--noscan` | **Verified not to prevent the drive probe** | Documented as "Don't access any media during disc scan and do not check for media insertion and removal." Measured 2026-09-08, `--noscan info dev:/dev/sr0` still sent SG_IO to all four drives — 60 commands against 70 without it. See below. |
 
 `<dest>` for the routing switches is one of `-same`, `-stdout`, `-stderr`,
 `-null`, or a filename.
@@ -74,6 +80,95 @@ makemkvcon -r --progress=-same --cache=1 info dev:/dev/sr0
 # indices are assigned per scan and shift when drives are hotplugged.
 makemkvcon -r --progress=-same --decrypt --cache=1024 backup disc:0 /path/to/out
 ```
+
+---
+
+## Every run probes every drive
+
+**MakeMKV opens every optical drive on the machine while its engine starts,
+before it reads the source argument.** Measured 2026-09-08 against v1.18.4 on
+four drives, none loaded, with `strace -f -e trace=openat,ioctl`:
+
+| command | drives sent SCSI commands | SG_IO total |
+|---|---|---|
+| `info disc:9999` | sg0, sg1, sg2, sg3 | 69 |
+| `info dev:/dev/sr0` | sg0, sg1, sg2, sg3 | 70 |
+| `--noscan info dev:/dev/sr0` | sg0, sg1, sg2, sg3 | 60 |
+| `info disc:1` | sg0, sg1, sg2, sg3 | 69 |
+
+(Three of those four drives answer; the fourth, `sg1`, is a drive that has
+been faulting since 2026-09-08 and returns `DID_BAD_TARGET` to its first
+INQUIRY, so MakeMKV drops it after one command. The other three take 22–25
+each.)
+
+It reads `/sys/bus/scsi/devices/*/{inquiry,type}`, then opens `/dev/sg%u` for
+each optical device and interrogates it. Nothing on the command line changes
+that, and neither does the hidden `io_SingleDrive` setting — `"1"`, `"0"` and
+`"/dev/sr0"` were all tried in `~/.MakeMKV/settings.conf` and all three still
+listed and probed every drive. It is GUI-only, and its author described it as
+"not yet fully working" in 2011.
+
+**Why it matters here:** the probe from a job starting on one drive reaches
+into a drive that is mid-rip. The 2015 report of this behaviour describes the
+symptom exactly — *"the second instance will try to read the info from
+/dev/sr1, which will make the drive start thrashing"* — and a 2024 report
+measured 1m55s of startup on seven drives, `--noscan` included.
+
+**What `--noscan` does and does not do.** These measurements were taken with
+every drive empty, so they establish only that it does not stop the *probe*.
+Whether it avoids *reading a disc* loaded in another drive — what the vendor
+text claims for it — is untested here, for want of a loaded drive at the time.
+Masking the nodes settles the question either way: a drive that cannot be
+opened cannot be read.
+
+**The fix: hide the other drives from the process.** MakeMKV finds drives
+through their SCSI generic node (`/dev/sgN`, not `/dev/srN`), and a node it
+cannot open is dropped in silence with no SCSI command issued:
+
+```bash
+# Only /dev/sr3 (sg3) is visible to this run; sg0/1/2/4 are masked.
+bwrap --dev-bind / / \
+      --bind /dev/null /dev/sg0 --bind /dev/null /dev/sg1 \
+      --bind /dev/null /dev/sg2 --bind /dev/null /dev/sg4 \
+      -- makemkvcon -r --cache=1 info disc:9999
+DRV:0,0,999,0,"BD-RE PIONEER BD-RW   BDR-212D 1.02 CLDL054817WL","","/dev/sr3"
+```
+
+Verified with strace: 21 SG_IO to `/dev/sg3`, zero elsewhere, the masked nodes
+failing `openat` with EACCES (bwrap mounts binds `nodev` inside its user
+namespace, so the open fails before it reaches `/dev/null`). Every MakeMKV
+Docker image relies on the same property — one container per drive, with only
+that drive's `sg` node passed in.
+
+This is what `src/media_backup/makemkv/isolation.py` builds, for every command
+including the enumeration. The drive's `sg` node comes from
+`/sys/class/block/srN/device/scsi_generic/` rather than from assuming `srN` is
+`sgN`: `sg` numbers every SCSI device, so a disk enumerating first shifts one
+numbering and not the other.
+
+**Consequence for indices.** Inside the sandbox the chosen drive is the only
+drive, so it is always `disc:0` — an index is meaningless outside the scan that
+produced it, which was already true and is now unmissable.
+
+### Sources
+
+The behaviour is long-known and was never fixed. Read via the Wayback Machine;
+`forum.makemkv.com` is frequently unreachable.
+
+* [t=3107](https://forum.makemkv.com/forum/viewtopic.php?t=3107) (2011) — mike
+  admin on `io_SingleDrive`: "not yet fully working".
+* [t=6626](https://forum.makemkv.com/forum/viewtopic.php?t=6626) (2013) — mike
+  admin: "If you specify the drive name then MakeMKV will only use this
+  particular drive. To skip scanning all drives specify `--noscan`." Not what
+  the binary does, then or now.
+* [t=8895](https://forum.makemkv.com/forum/viewtopic.php?t=8895) (2015) — the
+  thrashing report; a moderator answers that it is a common request, low on the
+  developer's list.
+* [t=35661](https://forum.makemkv.com/forum/viewtopic.php?t=35661) (2024) —
+  `--noscan` still probing all seven drives on 1.17.8.
+* [jlesage/docker-makemkv](https://github.com/jlesage/docker-makemkv) — "For an
+  optical drive to be detected by MakeMKV, it is mandatory to expose `/dev/sgY`
+  to the container."
 
 ---
 

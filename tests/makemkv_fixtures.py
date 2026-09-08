@@ -53,6 +53,31 @@ NO_DISCS = "\n".join(
     + ['MSG:5010,0,0,"Failed to open disc","Failed to open disc"', "TCOUNT:0"]
 )
 
+# --- HAND-BUILT: what an isolated run sees ---------------------------------
+# One drive, at index 0, because the sandbox hid the others: see
+# makemkv/isolation.py. The shape is a real capture -- an isolated
+# `info disc:9999` on 2026-09-08 returned exactly one populated DRV row and
+# the usual 15 empty slots -- but that drive was empty, and these need a disc
+# in them, so the disc fields are borrowed from the ENUMERATION capture above.
+def isolated_enumeration(index_row: str) -> str:
+    return "\n".join(
+        [ENUMERATION_LINES[0], index_row]
+        + [f'DRV:{i},256,999,0,"","",""' for i in range(1, 16)]
+        + ['MSG:5010,0,0,"Failed to open disc","Failed to open disc"', "TCOUNT:0"]
+    )
+
+
+#: sr0 alone, holding the Blu-ray, as its own sandbox sees it.
+ISOLATED_SR0 = isolated_enumeration(
+    'DRV:0,2,999,12,"BD-RE HL-DT-ST BD-RE  WH16NS40 1.05 KLOO6JG4911",'
+    f'"{SR0_LABEL}","{SR0}"')
+
+#: sr1 alone, holding the DVD. Note it is index 0 here and index 1 in the
+#: unisolated capture: an index means nothing outside the scan that made it.
+ISOLATED_SR1 = isolated_enumeration(
+    'DRV:0,2,999,1,"BD-RE HL-DT-ST BD-RE BU40N FR07 902HS017569",'
+    f'"{SR1_LABEL}","{SR1}"')
+
 # --- HAND-BUILT: a drive still spinning up after the tray closed -----------
 LOADING = "\n".join([
     ENUMERATION_LINES[0],

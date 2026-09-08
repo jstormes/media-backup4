@@ -7,6 +7,8 @@
   "cache_mb": 1024,
   "decrypt": true,
   "use_stdbuf": true,
+  "isolate_drives": true,
+  "bwrap": "/usr/bin/bwrap",
 
   "max_concurrent_jobs": 0,
   "min_free_margin_bytes": 10737418240,

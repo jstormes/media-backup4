@@ -76,7 +76,7 @@ so the GUI locates `makemkvcon` correctly.
 | Version | 1.18.4. The vendor serves only the current release, so 1.18.3 can no longer be downloaded. The licence is permanent and version independent, and registers 1.18.4 unchanged. |
 | Licence | Purchased permanent key (`app_Key` starts with `M-`, not the free rotating `T-` beta key). Does not expire. |
 | Build notes | Compiles clean against **ffmpeg 8 / libavcodec 62 with no patch**. Only **Qt5** is supported — 1.18.x's `configure` knows nothing about Qt6. |
-| Verified drives | Two Pioneer `BD-RW BDR-212D` (firmware 1.02) on SATA, both reporting **"Using direct disc access mode"** — LibreDrive active, bypassing the drive's AACS. Previously verified on an LG `BD-RE BU40N` (FR07) over USB. |
+| Verified drives | Two Pioneer `BD-RW BDR-212D` (firmware 1.02) on SATA, both reporting **"Using direct disc access mode"** — LibreDrive active, bypassing the drive's AACS. Previously verified on an LG `BD-RE BU40N` (FR07) over USB. **One of the two (`/dev/sr1`, `ata4`) failed at the ATA layer on 2026-09-08 and the kernel disabled it at 08:59** — every INQUIRY since returns `DID_BAD_TARGET`, so MakeMKV lists three drives, not four. A drive fault, not a MakeMKV one; see `docs/PLAN.md`. |
 
 Rebuilding it: `install-makemkv.sh` in the repo root does the whole job --
 build dependencies, both tarballs with `PREFIX=/usr/local`, the EULA prompt,
@@ -90,8 +90,15 @@ and verifies SHA-256 for the version it knows.
 
 ## Environment requirements
 
-- The user must be able to read the optical device (`/dev/sr0`). On the target
-  this is satisfied by the `cdrom` group plus a udev ACL.
+- The user must be able to read the optical device — **both nodes**. MakeMKV
+  finds and drives a disc through the SCSI generic node (`/dev/sgN`), not
+  `/dev/srN`, and skips any drive whose `sg` node it cannot open. On the target
+  both are satisfied by the `cdrom` group plus a udev ACL.
+- `bwrap` (bubblewrap) is wanted but not required. Each run is wrapped so it
+  can open only its own drive's `sg` node; without it every run probes every
+  drive on the machine, including one that is mid-rip. See
+  [`robot-mode.md`](robot-mode.md#every-run-probes-every-drive) and
+  `src/media_backup/makemkv/isolation.py`.
 - A JRE must be present for BD-J discs. MakeMKV logs which one it picked:
   `Using Java runtime from /usr/lib/jvm/java-25-openjdk-amd64/bin/java`.
 - `MAKEMKVCON` env var overrides the engine path if you ever need to pin a build.

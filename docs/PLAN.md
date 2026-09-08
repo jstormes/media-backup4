@@ -732,10 +732,113 @@ same over-estimate.
 The four measured cases are pinned as tests rather than described, so the next
 change to these numbers has to answer to them.
 
+## Every run probed every drive, including the one mid-rip (2026-09-08)
+
+Starting a job on one drive reached into every other drive on the machine.
+Measured on v1.18.4 with `strace -f -e trace=openat,ioctl`, four drives, none
+loaded:
+
+| command | drives sent SCSI commands | SG_IO total |
+| --- | --- | --- |
+| `info disc:9999` | sg0, sg1, sg2, sg3 | 69 |
+| `info dev:/dev/sr0` | sg0, sg1, sg2, sg3 | 70 |
+| `--noscan info dev:/dev/sr0` | sg0, sg1, sg2, sg3 | 60 |
+| `info disc:1` | sg0, sg1, sg2, sg3 | 69 |
+
+The probe happens while MakeMKV's engine starts, **before** it reads the source
+argument, so nothing about the source can avoid it. Each drive that answers
+gets 22-25 SCSI commands; `sg1` takes one, for the reason in the last section
+below. The hidden `io_SingleDrive` setting was tried too -- `"1"`, `"0"` and
+`"/dev/sr0"` in `~/.MakeMKV/settings.conf` -- and changed nothing; it is a GUI
+setting its own author called "not yet fully working" in 2011.
+
+This is not a local misconfiguration. It has been reported to MakeMKV since
+2011, in 2015 with this exact symptom (*"the second instance will try to read
+the info from /dev/sr1, which will make the drive start thrashing"*) and again
+in 2024, where seven drives cost 1m55s of startup with `--noscan` in place.
+Sources are listed in `docs/makemkv/robot-mode.md`.
+
+### What changed
+
+MakeMKV finds drives through their **SCSI generic** node (`/dev/sgN`, not
+`/dev/srN`) and drops one it cannot open -- in silence, with no SCSI command
+issued. So every command now runs under `bwrap` with every `/dev/sg*` but its
+own masked by a bind of `/dev/null`:
+
+```
+/usr/bin/bwrap --dev-bind / / --bind /dev/null /dev/sg0 --bind /dev/null /dev/sg1 \
+  --bind /dev/null /dev/sg2 --bind /dev/null /dev/sg4 -- \
+  stdbuf -oL -eL /usr/local/bin/makemkvcon -r --cache=1 info disc:9999
+DRV:0,0,999,0,"BD-RE PIONEER BD-RW   BDR-212D 1.02 CLDL054817WL","","/dev/sr3"
+```
+
+21 SG_IO to `/dev/sg3`, zero to the other three, which fail `openat` with
+EACCES -- bwrap mounts binds `nodev` inside its user namespace, so the open
+fails before it reaches `/dev/null`. Every MakeMKV Docker image depends on the
+same property; one container per drive, with only that drive's `sg` node
+passed in.
+
+* `makemkv/isolation.py` (new) builds the wrapper. The drive's `sg` node comes
+  from `/sys/class/block/srN/device/scsi_generic/`, not from assuming `srN` is
+  `sgN`: `sg` numbers every SCSI device -- `sg4` here is the system SSD -- so
+  one more disk enumerating first shifts one numbering and not the other.
+* All three argv builders take the device now. It is never passed to
+  makemkvcon (`backup` and `mkv` still want `disc:N`); it is what decides the
+  mask.
+* **An isolated job no longer shares `DriveIndex`.** Inside the sandbox the
+  enumeration lists one drive, so another job's cached copy resolves to
+  `device_not_found`. That sharing existed to stop N jobs each probing every
+  drive, which is precisely what isolation now prevents, so nothing is lost.
+  The regression is pinned by a test that fails when the branch is removed.
+* Best-effort by design: no bwrap, or a device that will not map, gives an
+  **unisolated run rather than a failed one**. `config.validate()` warns at
+  startup instead, and `install-requirements.sh` (which now installs
+  `bubblewrap`) and `verify-setup.sh` both check that a namespace can actually
+  be created -- AppArmor can refuse it.
+* `isolate_drives` and `bwrap` are config, defaulting to on and
+  `/usr/bin/bwrap`.
+
+One thing is deliberately **not** settled: whether `--noscan` avoids *reading*
+a disc loaded in another drive, as the vendor text claims. Every drive was
+empty when this was measured, so the runs prove only that the probe happens.
+Masking makes the question moot here.
+
+### The other thing this turned up: /dev/sr1 is faulting
+
+MakeMKV lists three drives, not four -- and that is the drive's fault, not
+MakeMKV's. The one INQUIRY it sends to `sg1` comes back `host_status=0x4`
+(`DID_BAD_TARGET`) with no data, so it drops the drive. The kernel log says why:
+
+```
+08:52:22  sr 3:0:0:0: [sr1] Sense Key : Medium Error [current]
+08:52:22  sr 3:0:0:0: [sr1] Add. Sense: L-EC uncorrectable error
+08:52:52  ata4.00: exception Emask 0x0 ... frozen
+08:52:52  ata4: hard resetting link
+08:52:58  ata4.00: qc timeout after 5000 msecs (cmd 0xa1)
+08:52:58  ata4.00: failed to IDENTIFY (I/O error, err_mask=0x4)
+08:52:58  ata4.00: revalidation failed (errno=-5)
+...
+08:59:51  ata4.00: failed to set xfermode (err_mask=0x1)
+08:59:51  ata4.00: disable device
+```
+
+That cycle -- read error, link freeze, hard reset, failed IDENTIFY -- ran 12
+times over seven minutes and ended with the kernel disabling the device at
+08:59:51. Nothing has come from `ata4` since. The drive (`3:0:0:0`, the second
+Pioneer BDR-212D) enumerated cleanly at boot 2026-09-07 23:11 and went bad at
+08:52 on 2026-09-08 while reading a disc; the SCSI device is still `running`
+in sysfs, which is why it still has an `sr1` and an `sg1` that answer nothing.
+Permissions are not involved: `sg0` and `sg1` carry identical ACLs. Nothing in
+this project can fix it -- power-cycle the machine or rescan the bus, and
+suspect the disc that was in it, then the SATA cable, then the drive.
+
 ## Next steps
 
 Nothing is blocked. In rough order of worth:
 
+- **Deal with `/dev/sr1`.** The kernel disabled it at 08:59 on 2026-09-08 and
+  it is invisible to MakeMKV until the bus is rescanned or the machine is
+  power-cycled; see the section above. Three working drives until then.
 - **Restart the app to pick up the DVD fix and the flicker fix.** The
   instance that ran on 2026-09-06 has the old code loaded; its Blu-ray will
   finish fine, but every DVD it is asked for will keep failing until it is

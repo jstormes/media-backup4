@@ -107,6 +107,10 @@ class DriveIndex:
 
     The lock also serialises the probes, so jobs starting together never pile
     concurrent makemkvcon processes onto the same drives.
+
+    None of which applies to an isolated run: it enumerates one drive, cannot
+    stall anyone else's, and its list names only its own device. The runner
+    keeps its own list in that case -- see :mod:`.isolation`.
     """
 
     def __init__(self, ttl_s: float = DEFAULT_TTL_S,

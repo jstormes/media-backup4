@@ -47,7 +47,7 @@ checks the result and is read-only, so it is the one to run after a reboot.
 
 | Script | Needs root | What it does |
 |--------|-----------|--------------|
-| `install-requirements.sh` | yes | `python3-tk`, a JRE, then verifies every documented requirement |
+| `install-requirements.sh` | yes | `python3-tk`, a JRE, `bubblewrap`, then verifies every documented requirement |
 | `install-makemkv.sh` | yes | builds MakeMKV from both tarballs into `/usr/local`, checks the link |
 | `setup-backup-drive.sh` | yes | mounts the backup partition at `media_path` by UUID, `nofail`, owned by the app user |
 | `verify-setup.sh` | no | checks all of the above plus automount and drive identity |
@@ -129,7 +129,29 @@ python3 -m media_backup
   take seconds on healthy hardware (14s for four loaded drives), and
   `stall_timeout_s` cannot bound them because it needs output to notice.
 
-### Drive enumeration is global (`enumeration.py`)
+### Each run is confined to one drive (`isolation.py`)
+
+- **MakeMKV opens every optical drive on the machine at engine startup,
+  before it reads the source argument.** Measured 2026-09-08 on v1.18.4:
+  `info dev:/dev/sr0` sent 22-25 SCSI commands to each drive that answers --
+  sg0, sg2 and sg3 here, sg1 being the faulting drive. Neither
+  `disc:` nor `dev:` nor `--noscan` nor the hidden `io_SingleDrive` setting
+  changes it. The cost is real: the probe from a job starting on one drive
+  reaches into a drive that is mid-rip.
+- So every command -- enumerate, scan and save alike -- runs under `bwrap`
+  with every `/dev/sg*` except its own masked by a bind of `/dev/null`.
+  MakeMKV finds drives through the `sg` node and drops one it cannot open
+  without issuing a single SCSI command. Verified: 21 SG_IO to the target,
+  zero elsewhere, one DRV row.
+- The drive's `sg` node comes from `/sys/class/block/srN/device/scsi_generic/`.
+  `sg` numbers every SCSI device (`sg4` here is the system SSD), so it cannot
+  be assumed to match `srN`.
+- Best-effort: no bwrap, or a device that will not map, means an unisolated
+  run rather than a failed one. `config.validate()` warns at startup, and
+  `install-requirements.sh` and `verify-setup.sh` both check it.
+- Details and sources: `docs/makemkv/robot-mode.md`.
+
+### Drive enumeration is global unless isolated (`enumeration.py`)
 
 - `info disc:9999` lists *every* drive, and opens every drive to do it. One
   job per drive therefore means N identical probes, and a single drive that
@@ -138,10 +160,15 @@ python3 -m media_backup
   serialises the probes, and a short TTL lets a burst of job starts share
   one result. `JobManager` owns one; a runner built standalone gets a
   private one and behaves as it always did.
+- **An isolated run does not use it.** Inside the sandbox the enumeration
+  lists one drive, so another job's copy would resolve to `device_not_found`;
+  the runner enumerates per job instead. Nothing is lost -- the sharing
+  existed to stop N jobs probing every drive, which is what isolation now
+  prevents outright.
 - The TTL stays short and `gui_app` calls `JobManager.drives_changed()` on
   every insert or eject, because `disc:N` indices move when a drive is
   hotplugged, and `resolve()`'s label check cannot catch two discs sharing a
-  label.
+  label. Isolated, the index is always 0.
 
 ### Drive monitoring (`drive_monitor.py`)
 

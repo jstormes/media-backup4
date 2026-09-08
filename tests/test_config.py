@@ -111,6 +111,24 @@ class TestValidate(unittest.TestCase):
             fatal = [p for p in config.validate(cfg) if p.is_fatal]
             self.assertEqual(fatal, [], [p.text for p in fatal])
 
+    def test_an_unusable_sandbox_warns_but_does_not_stop_the_run(self):
+        """Probing every drive is slow; not starting is a disc not backed up."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = config.Config(media_path=Path(d), makemkvcon=Path("/bin/sh"),
+                                isolate_drives=True,
+                                bwrap=Path("/nonexistent/bwrap"))
+            problems = config.validate(cfg)
+            self.assertTrue(any("bwrap" in p.text and not p.is_fatal
+                                for p in problems))
+            self.assertEqual([p for p in problems if p.is_fatal], [])
+
+    def test_no_sandbox_warning_when_isolation_is_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = config.Config(media_path=Path(d), makemkvcon=Path("/bin/sh"),
+                                isolate_drives=False,
+                                bwrap=Path("/nonexistent/bwrap"))
+            self.assertFalse(any("bwrap" in p.text for p in config.validate(cfg)))
+
     def test_nonsense_thresholds_are_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = config.Config(media_path=Path(d), makemkvcon=Path("/bin/sh"),

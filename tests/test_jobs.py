@@ -109,7 +109,7 @@ class JobsTestCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.cfg = Config(media_path=self.root, min_free_margin_bytes=0, use_stdbuf=False,
-                          max_concurrent_jobs=self.max_concurrent_jobs)
+                          max_concurrent_jobs=self.max_concurrent_jobs, isolate_drives=False)
         self.store = CollectionStore(self.cfg)
         self.collection = self.store.create(identifier="test-set")
         self.changes = []

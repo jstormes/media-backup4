@@ -15,6 +15,7 @@ TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 PACKAGES=(
     python3-tk            # tkinter -- the GUI will not import without it
     default-jre-headless  # MakeMKV needs a JRE for BD-J Blu-rays
+    bubblewrap            # hides the other drives from each makemkvcon run
 )
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -90,7 +91,23 @@ else
 fi
 
 command -v stdbuf >/dev/null && ok "stdbuf" || warn "stdbuf missing -- set use_stdbuf=false in config.json"
+
 command -v java   >/dev/null && ok "java ($(java -version 2>&1 | head -1))" || bad "java -- needed for BD-J Blu-rays"
+
+# MakeMKV probes every optical drive whatever source it is given, which
+# reaches into a drive that is mid-rip. bwrap is how each run is confined to
+# its own drive; without it runs still work, they just disturb each other.
+if command -v bwrap >/dev/null; then
+    if bwrap --dev-bind / / -- true 2>/dev/null; then
+        ok "bwrap ($(bwrap --version)) -- each run sees only its own drive"
+    else
+        warn "bwrap is installed but cannot create a namespace here; runs will"
+        warn "  probe every drive. Check kernel.apparmor_restrict_unprivileged_userns."
+    fi
+else
+    warn "bwrap missing -- every makemkvcon run will probe every drive; set"
+    warn "  isolate_drives=false in config.json to silence the startup warning"
+fi
 
 # MakeMKV is proprietary, needs a purchased key, and is built from source.
 # Not installable here; report its state so the gap is visible.

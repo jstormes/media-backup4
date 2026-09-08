@@ -32,6 +32,11 @@ makemkvcon -r --cache=1 info disc:9999
 There is no `list` or `info driver` subcommand. This idiom asks for a
 nonexistent disc index and reads the `DRV` lines before the failure.
 
+This opens every drive on the machine — as does every other command, whatever
+source it is given. Under the sandbox this project runs it in, it lists exactly
+one drive: see
+[robot-mode.md](robot-mode.md#every-run-probes-every-drive).
+
 **Emitted output (spider-man-disc inserted):**
 
 ```
@@ -84,6 +89,8 @@ makemkvcon -r --cache=1 info disc:0
 
 Same result as 2.1. Prefer `dev:` in production code (drive indices can shift
 on hotplug); `disc:` is acceptable for quick scans in a stable environment.
+Neither form stops MakeMKV opening every other drive first — see
+[robot-mode.md](robot-mode.md#every-run-probes-every-drive).
 
 ### 2.3 Output structure
 
@@ -351,6 +358,11 @@ verify the integration before writing any code.
 | # | Setup | Check |
 |---|---------|-------|
 | 10 | Two `makemkvcon` processes targeting different drives | Both run simultaneously without interference |
+| 11 | `strace -f -e trace=ioctl makemkvcon -r --cache=1 info dev:/dev/srX` | SG_IO goes to **every** drive's `sg` node, not just `srX`'s — the behaviour isolation exists to stop |
+| 12 | The same command under `bwrap` with the other `/dev/sg*` masked | SG_IO to one node only; one `DRV` row, at index 0; masked nodes fail `openat` with EACCES |
+
+Test 12 is what `src/media_backup/makemkv/isolation.py` builds. It needs no
+disc: with empty drives the probe is still visible, which is the point.
 
 ---
 
