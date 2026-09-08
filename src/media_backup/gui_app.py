@@ -1022,6 +1022,11 @@ class MainWindow:
         the state behind one of them.
         """
         logger.info("GUI update: %d drive(s) in state", len(drives))
+        # A disc went in or came out, so MakeMKV's disc:N indices may have
+        # moved. Jobs share one enumeration between them; this is what stops
+        # a later job resolving its device from a list taken before the
+        # change. See makemkv.enumeration.DriveIndex.
+        self.manager.drives_changed()
         drive_map = {d.device: d for d in drives}
         self._drives = drive_map
 

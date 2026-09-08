@@ -1,8 +1,11 @@
 """Tests for resolving a device path to a volatile makemkv disc index."""
 
+import threading
+import time
 import unittest
 
 from media_backup.makemkv import enumeration as enum
+from media_backup.makemkv.enumeration import DriveIndex, parse_drives
 
 from . import makemkv_fixtures as fx
 
@@ -74,3 +77,69 @@ class TestResolve(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDriveIndex(unittest.TestCase):
+    """One enumeration serving every job that asks in the same moment."""
+
+    def setUp(self):
+        self.calls = 0
+
+    def enumerate_once(self):
+        self.calls += 1
+        return fx.ENUMERATION_LINES
+
+    def test_a_second_caller_reuses_the_first_probe(self):
+        index = DriveIndex(ttl_s=5.0, clock=lambda: 100.0)
+        first = index.drives(self.enumerate_once)
+        second = index.drives(self.enumerate_once)
+        self.assertEqual(self.calls, 1, "the drive list was probed twice")
+        self.assertEqual(first, second)
+
+    def test_a_stale_list_is_probed_again(self):
+        now = [100.0]
+        index = DriveIndex(ttl_s=5.0, clock=lambda: now[0])
+        index.drives(self.enumerate_once)
+        now[0] += 6.0
+        index.drives(self.enumerate_once)
+        self.assertEqual(self.calls, 2)
+
+    def test_force_skips_a_fresh_list(self):
+        index = DriveIndex(ttl_s=5.0, clock=lambda: 100.0)
+        index.drives(self.enumerate_once)
+        index.drives(self.enumerate_once, force=True)
+        self.assertEqual(self.calls, 2)
+
+    def test_invalidating_forces_the_next_probe(self):
+        index = DriveIndex(ttl_s=5.0, clock=lambda: 100.0)
+        index.drives(self.enumerate_once)
+        index.invalidate()
+        index.drives(self.enumerate_once)
+        self.assertEqual(self.calls, 2)
+
+    def test_a_failed_probe_is_not_cached(self):
+        """Otherwise one bad moment blinds every later job."""
+        index = DriveIndex(ttl_s=5.0, clock=lambda: 100.0)
+        self.assertEqual(index.drives(lambda: []), [])
+        self.assertEqual(index.drives(self.enumerate_once), parse_drives(fx.ENUMERATION_LINES))
+
+    def test_concurrent_callers_share_one_probe(self):
+        """The real case: a round of jobs all starting together."""
+        started = threading.Barrier(4)
+        index = DriveIndex(ttl_s=5.0)
+
+        def slow_enumeration():
+            self.calls += 1
+            time.sleep(0.05)
+            return fx.ENUMERATION_LINES
+
+        def ask():
+            started.wait(5)
+            index.drives(slow_enumeration)
+
+        threads = [threading.Thread(target=ask) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+        self.assertEqual(self.calls, 1, "four jobs ran four enumerations")

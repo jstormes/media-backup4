@@ -81,6 +81,12 @@ class Config:
     #: A run with no progress and no messages for this long is wedged. A disc
     #: grinding through read retries still emits MSG:2003, so it is not silent.
     stall_timeout_s: int = 1800
+    #: Budget for the short probes -- enumerate and scan. These finish in
+    #: seconds on healthy hardware (14s for four loaded drives, measured
+    #: 2026-09-07), and they produce no output at all when a drive wedges,
+    #: so stall_timeout_s cannot see them. A drive that hangs MakeMKV's
+    #: probe holds the job forever without this.
+    probe_timeout_s: int = 300
     max_job_duration_s: int = 21600
     eject_on_success: bool = True
     #: How many failed attempts' data to keep. Logs are always kept; three
@@ -208,6 +214,8 @@ def validate(cfg: Config) -> list[Problem]:
         problems.append(Problem(ERROR, "max_feature_titles must be at least 1"))
     if cfg.cache_mb < 1:
         problems.append(Problem(ERROR, "cache_mb must be at least 1"))
+    if cfg.probe_timeout_s < 1:
+        problems.append(Problem(ERROR, "probe_timeout_s must be at least 1"))
 
     return problems
 

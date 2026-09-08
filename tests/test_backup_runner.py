@@ -28,11 +28,34 @@ FEATURE_BYTES = 4_245_336_064
 FEATURE_SECONDS = 6159
 
 
+#: A transcript standing for a process that emits nothing and never exits --
+#: what a drive that hangs MakeMKV's probe actually does. Only a signal ends
+#: it, which is the behaviour the idle watchdogs have to produce.
+SILENT = object()
+
+
+class FastClock:
+    """A clock that jumps forward on every reading.
+
+    Watchdog tests need time to pass while nothing happens, and a silent
+    process gives no line to hang a clock bump on.
+    """
+
+    def __init__(self, step):
+        self.step = step
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
 class FakeProcess:
     """Replays a captured transcript instead of running makemkvcon."""
 
     def __init__(self, lines, exit_code=0, on_line=None):
-        self._lines = list(lines)
+        self._silent = lines is SILENT
+        self._lines = [] if self._silent else list(lines)
         self._exit_code = exit_code
         self._on_line = on_line
         self.signals = []
@@ -40,6 +63,9 @@ class FakeProcess:
         self._stopped = threading.Event()
 
     def lines(self):
+        if self._silent:
+            self._stopped.wait(10)      # ends only when signalled
+            return
         for line in self._lines:
             if self._stopped.is_set():
                 return
@@ -75,6 +101,9 @@ class Harness:
     def spawn(self, argv):
         self.argvs.append(argv)
         lines = self.transcripts.pop(0) if self.transcripts else []
+        if lines is SILENT:
+            self.processes.append(proc := FakeProcess(SILENT))
+            return proc
         saving = "mkv" in argv
         code = self.exit_code if saving else 0
         proc = FakeProcess(lines, code, self.on_line if saving else None)
@@ -344,6 +373,38 @@ class TestWatchdogs(RunnerTestCase):
         h.on_line = jump_the_clock
         self.run_job(h)
         self.assertIn("gave up after", h.final.observation.stall_reason)
+
+    def test_a_probe_that_never_speaks_is_given_up_on(self):
+        """The case the line-driven watchdogs could never see.
+
+        A drive that hangs MakeMKV's probe emits nothing at all -- no DRV
+        rows, no messages -- while burning CPU. Watchdogs driven by arriving
+        lines never run, so the job waited forever. Measured on an LG GHA2N,
+        2026-09-07.
+        """
+        h = Harness([SILENT])          # the enumeration never says a word
+        runner = BackupRunner(
+            self.request(), h.emit, spawn=h.spawn,
+            clock=FastClock(self.cfg.probe_timeout_s + 1), ejector=h.eject)
+        runner.start()
+        runner.join(timeout=10)
+
+        self.assertIn(signal.SIGTERM, h.processes[-1].signals)
+        self.assertEqual(h.ejects, [], "a wedged drive must not be ejected")
+
+    def test_a_silent_save_is_stopped(self):
+        """stall_timeout_s now applies to silence, not only to slow output."""
+        h = Harness([fx.ENUMERATION_LINES,
+                     fx.DVD_SCAN.splitlines(),
+                     SILENT])
+        runner = BackupRunner(
+            self.request(), h.emit, spawn=h.spawn,
+            clock=FastClock(self.cfg.stall_timeout_s + 1), ejector=h.eject)
+        runner.start()
+        runner.join(timeout=10)
+
+        self.assertIn(signal.SIGTERM, h.processes[-1].signals)
+        self.assertEqual(h.final.verdict.outcome, outcome.CANCELLED)
 
 
 class TestTitleScan(RunnerTestCase):

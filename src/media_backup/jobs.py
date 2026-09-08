@@ -44,6 +44,7 @@ from typing import Callable
 from . import events, model
 from .config import Config
 from .makemkv import outcome
+from .makemkv.enumeration import DriveIndex
 from .makemkv.runner import BackupRequest, BackupRunner
 from .store import CollectionStore, StoreError
 
@@ -143,6 +144,11 @@ class JobManager:
         self._jobs: dict[str, _Job] = {}
         self._queue: list[str] = []
         self._busy: dict[str, str] = {}  # device -> job_id
+        #: Shared by every runner this manager starts. Drive enumeration is
+        #: global -- one command lists every drive -- so a job per drive
+        #: means N identical probes, each opening all N drives. One bad
+        #: drive then stalls every job, not just its own.
+        self._drive_index = DriveIndex()
 
     # -- wiring -------------------------------------------------------------
 
@@ -178,6 +184,14 @@ class JobManager:
                    if j in self._jobs]
         queued = [self._jobs[j].status for j in self._queue if j in self._jobs]
         return running + queued
+
+    def drives_changed(self) -> None:
+        """Forget the shared drive list. Call on any insert or eject.
+
+        Indices shift when a drive is hotplugged, and a resolution made from
+        a stale list can point at the wrong disc.
+        """
+        self._drive_index.invalidate()
 
     def is_busy(self, device: str) -> bool:
         return device in self._busy
@@ -325,7 +339,8 @@ class JobManager:
         )
 
         job.runner = self._runner_factory(
-            request, self._on_event, ejector=self._ejector_for(job))
+            request, self._on_event, ejector=self._ejector_for(job),
+            drive_index=self._drive_index)
         self._set_disc_state(job, model.RESOLVING, "starting")
         self._save(job.collection)
         self._notify(job)

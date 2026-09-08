@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -29,7 +30,7 @@ from typing import Callable, Iterator, Protocol
 from .. import events, mkv, model
 from ..config import Config, has_room_for
 from . import command, inspect as layouts, messages, selection
-from .enumeration import Resolution, parse_drives, resolve
+from .enumeration import DriveIndex, Resolution, resolve
 from .outcome import BackupObservation, OutcomePolicy, Verdict, judge
 from .records import (ATTR_CHAPTER_COUNT, ATTR_COMMENT, ATTR_DURATION,
                       ATTR_NAME, ATTR_OUTPUT_FILE, ATTR_SEGMENTS_MAP,
@@ -45,6 +46,13 @@ PROGRESS_INTERVAL_S = 0.25
 
 TERMINATE_GRACE_S = 10.0
 KILL_GRACE_S = 5.0
+
+#: How often an idle read wakes to run the watchdogs. Short enough that a
+#: cancel is noticed promptly, long enough not to spin.
+IDLE_POLL_S = 1.0
+
+#: Pushed by the reader thread when the process's output ends.
+_DONE = object()
 
 
 def _read_counts(record: Msg, obs: BackupObservation) -> None:
@@ -170,8 +178,13 @@ class BackupRunner:
         clock: Callable[[], float] = time.monotonic,
         ejector: Callable[..., None] | None = None,
         policy: OutcomePolicy | None = None,
+        drive_index: DriveIndex | None = None,
     ) -> None:
         self.request = request
+        #: Shared by every job the manager starts, so a round of jobs runs
+        #: one drive enumeration between them. A runner built on its own
+        #: gets a private one and behaves exactly as it did before.
+        self._drive_index = drive_index or DriveIndex(clock=clock)
         self._emit = emit
         self._spawn = spawn
         self._clock = clock
@@ -342,18 +355,23 @@ class BackupRunner:
     def _resolve_index(self) -> Resolution:
         req = self.request
         argv = command.enumerate_argv(req.cfg)
-        lines = list(self._run_to_completion(argv))
-        drives = parse_drives(lines)
+
+        def enumerate_once() -> list[str]:
+            return self._run_to_completion(argv, "drive enumeration")
+
+        drives = self._drive_index.drives(enumerate_once)
         resolution = resolve(drives, req.device, req.expected_label)
 
-        # A drive that is still spinning up is worth waiting for.
+        # A drive that is still spinning up is worth waiting for -- and the
+        # cached list is exactly the one that said "loading", so re-reading
+        # it would just say so again.
         attempts = 0
         while (not resolution and resolution.error_kind == "drive_loading"
                and attempts < 3 and not self._cancelled.is_set()):
             attempts += 1
             self._sleep(2.0)
-            lines = list(self._run_to_completion(argv))
-            resolution = resolve(parse_drives(lines), req.device, req.expected_label)
+            drives = self._drive_index.drives(enumerate_once, force=True)
+            resolution = resolve(drives, req.device, req.expected_label)
         return resolution
 
     def _scan_titles(self, index: int) -> None:
@@ -368,7 +386,7 @@ class BackupRunner:
         argv = command.info_argv(self.request.cfg, index)
         current: dict[int, model.Title] = {}
         streams: dict[int, set[int]] = {}
-        for line in self._run_to_completion(argv):
+        for line in self._run_to_completion(argv, "disc scan"):
             record = parse_line(line)
             if isinstance(record, Sinfo):
                 streams.setdefault(record.title, set()).add(record.stream)
@@ -471,7 +489,12 @@ class BackupRunner:
 
         log.write(f"# title {title.index} ({title.source or title.duration})\n")
         self._log(log, "# " + " ".join(argv) + "\n")
-        for line in process.lines():
+        # Through _iter_lines, so the watchdogs also run while the process
+        # is silent. Driving them from arriving lines alone means a wedged
+        # makemkvcon -- the one case stall_timeout_s exists for -- is the one
+        # case they never catch.
+        for line in self._iter_lines(
+                process, lambda: self._check_watchdogs(obs, started)):
             self._log(log, line)
             self._consume(line, obs)
             self._check_watchdogs(obs, started)
@@ -601,8 +624,66 @@ class BackupRunner:
 
     # -- helpers ------------------------------------------------------------
 
-    def _run_to_completion(self, argv: list[str]) -> list[str]:
-        """Run a short makemkvcon command and collect its output."""
+    def _iter_lines(self, process, on_idle: Callable[[], None]) -> Iterator[str]:
+        """Yield the process's lines, waking every IDLE_POLL_S regardless.
+
+        Iterating a pipe blocks until a line arrives, so a wedged makemkvcon
+        -- one burning CPU and emitting nothing -- is indistinguishable from
+        a slow one, and no amount of watchdog code in the loop body ever
+        runs. A drive that hangs MakeMKV's probe produces exactly that: zero
+        output, forever. Measured on an LG GHA2N, 2026-09-07.
+
+        So the blocking read happens on its own thread and this loop waits on
+        a queue instead, calling ``on_idle`` whenever nothing arrived. The
+        reader thread is daemonic and ends when the pipe closes, which the
+        kill path guarantees by signalling the process group.
+        """
+        # Bounded, so the reader stays in step with the consumer. An
+        # unbounded queue would let a chatty process buffer its whole output
+        # in memory, and would let _last_activity_at lag behind the lines
+        # actually consumed, which is what the watchdogs measure.
+        items: queue.Queue = queue.Queue(maxsize=1)
+
+        def pump() -> None:
+            try:
+                for line in process.lines():
+                    items.put(line)
+            except Exception as exc:  # the pipe died under us; end the loop
+                logger.debug("reader thread ended: %s", exc)
+            finally:
+                items.put(_DONE)
+
+        threading.Thread(target=pump, name="makemkvcon-reader",
+                         daemon=True).start()
+
+        while True:
+            try:
+                item = items.get(timeout=IDLE_POLL_S)
+            except queue.Empty:
+                on_idle()
+                continue
+            if item is _DONE:
+                return
+            yield item
+
+    def _probe_watchdog(self, started: float, what: str) -> Callable[[], None]:
+        """Give up on a probe that has gone silent past its budget."""
+        def check() -> None:
+            if self._cancelled.is_set():
+                return
+            budget = self.request.cfg.probe_timeout_s
+            if self._clock() - started > budget:
+                logger.warning("job %s: %s produced no result in %ds",
+                               self.request.job_id, what, budget)
+                self.cancel(model.ERR_TIMEOUT)
+        return check
+
+    def _run_to_completion(self, argv: list[str], what: str = "probe") -> list[str]:
+        """Run a short makemkvcon command and collect its output.
+
+        Bounded by ``probe_timeout_s``: these commands finish in seconds, and
+        the job has nothing to wait on if one never returns.
+        """
         try:
             process = self._spawn(argv)
         except OSError as exc:
@@ -610,7 +691,8 @@ class BackupRunner:
             return []
         with self._process_lock:
             self._process = process
-        lines = list(process.lines())
+        started = self._clock()
+        lines = list(self._iter_lines(process, self._probe_watchdog(started, what)))
         process.wait()
         with self._process_lock:
             self._process = None

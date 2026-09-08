@@ -12,12 +12,20 @@ rather than guesses.
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .records import Drv, parse_line
 
-__all__ = ["DriveRow", "Resolution", "parse_drives", "resolve"]
+__all__ = ["DriveIndex", "DriveRow", "Resolution", "parse_drives", "resolve"]
+
+#: How long an enumeration may be reused. Long enough for a burst of jobs
+#: starting together to share one, short enough that a disc swapped in
+#: between is not resolved from a stale list. resolve() still checks the
+#: label, but two discs can share one.
+DEFAULT_TTL_S = 5.0
 
 #: Reasons a resolution can fail, recorded verbatim as an attempt's error_kind.
 NOT_FOUND = "device_not_found"
@@ -86,3 +94,50 @@ def resolve(drives: Iterable[Drv], device: str, expected_label: str = "") -> Res
         )
 
     return Resolution(True, index=row.index, row=row)
+
+
+class DriveIndex:
+    """One drive enumeration, shared by every job that needs it.
+
+    ``info disc:9999`` lists *every* drive, so N jobs each running their own
+    is N times the work for one answer -- and every one of them opens every
+    drive. A single drive that hangs MakeMKV's probe therefore stalls all of
+    them, not just its own job. Sharing the result bounds that: one probe is
+    attempted, and whatever it says goes to everyone waiting.
+
+    The lock also serialises the probes, so jobs starting together never pile
+    concurrent makemkvcon processes onto the same drives.
+    """
+
+    def __init__(self, ttl_s: float = DEFAULT_TTL_S,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self._ttl = ttl_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._drives: list[Drv] = []
+        self._taken_at = float("-inf")
+
+    def drives(self, enumerate_once: Callable[[], Iterable[str]],
+               *, force: bool = False) -> list[Drv]:
+        """The current drive list, enumerating only if there is no fresh one.
+
+        ``force`` skips the cache, for a caller that knows the previous
+        answer is stale -- a drive that was still loading, say.
+        """
+        with self._lock:
+            fresh = self._drives and self._clock() - self._taken_at <= self._ttl
+            if fresh and not force:
+                return self._drives
+            drives = parse_drives(enumerate_once())
+            # A failed probe is not cached: the next job should try again
+            # rather than inherit an empty list.
+            if drives:
+                self._drives = drives
+                self._taken_at = self._clock()
+            return drives
+
+    def invalidate(self) -> None:
+        """Drop the cached list. Call when a disc is inserted or ejected."""
+        with self._lock:
+            self._drives = []
+            self._taken_at = float("-inf")

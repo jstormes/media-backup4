@@ -114,6 +114,35 @@ python3 -m media_backup
   The block-level `Size` and `IdLabel` are never merged, which is what
   `verify-setup.sh` cross-checks `has_media` against.
 
+### Reading a makemkvcon process (`runner.py`)
+
+- Every read goes through `_iter_lines`, which pumps the pipe on a reader
+  thread and waits on a bounded queue, so the loop wakes every second even
+  when **no output arrives**. Iterating the pipe directly blocks forever, and
+  a drive that hangs MakeMKV's probe emits nothing at all -- so watchdogs
+  driven by arriving lines never ran in exactly the case they exist for. An
+  LG GHA2N did this on 2026-09-07: 100% CPU, zero DRV rows, indefinitely.
+- The queue is bounded at one item deliberately. Unbounded, the reader races
+  ahead and `_last_activity_at` lags the lines actually consumed, which is
+  what the watchdogs measure.
+- `probe_timeout_s` bounds the two short commands, enumerate and scan. They
+  take seconds on healthy hardware (14s for four loaded drives), and
+  `stall_timeout_s` cannot bound them because it needs output to notice.
+
+### Drive enumeration is global (`enumeration.py`)
+
+- `info disc:9999` lists *every* drive, and opens every drive to do it. One
+  job per drive therefore means N identical probes, and a single drive that
+  hangs the probe stalls **all** of them, not just its own job.
+- `DriveIndex` gives one enumeration to everyone who asks at once: a lock
+  serialises the probes, and a short TTL lets a burst of job starts share
+  one result. `JobManager` owns one; a runner built standalone gets a
+  private one and behaves as it always did.
+- The TTL stays short and `gui_app` calls `JobManager.drives_changed()` on
+  every insert or eject, because `disc:N` indices move when a drive is
+  hotplugged, and `resolve()`'s label check cannot catch two discs sharing a
+  label.
+
 ### Drive monitoring (`drive_monitor.py`)
 
 - Subscribes to udisks2 `InterfacesAdded` / `InterfacesRemoved`; each relevant

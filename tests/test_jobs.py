@@ -124,7 +124,7 @@ class JobsTestCase(unittest.TestCase):
 
     # -- collaborators ------------------------------------------------------
 
-    def runner_factory(self, request, emit, *, ejector=None):
+    def runner_factory(self, request, emit, *, ejector=None, **kwargs):
         runner = FakeRunner(request, emit, ejector=ejector)
         self.runners.append(runner)
         return runner
@@ -533,7 +533,7 @@ class PipelineTestCase(JobsTestCase):
         self.woken = threading.Event()
         self.manager._dispatch = self._park
 
-    def runner_factory(self, request, emit, *, ejector=None):
+    def runner_factory(self, request, emit, *, ejector=None, **kwargs):
         def on_line(proc, line):
             if self.output_ratio is not None:
                 make_output(request.dest, self.output_ratio)

@@ -147,7 +147,7 @@ class WindowTestCase(unittest.TestCase):
     def seed_store(self):
         """Put collections on disk before the window loads them. Override me."""
 
-    def runner_factory(self, request, emit, *, ejector=None):
+    def runner_factory(self, request, emit, *, ejector=None, **kwargs):
         runner = FakeRunner(request, emit, ejector=ejector)
         self.runners.append(runner)
         return runner
