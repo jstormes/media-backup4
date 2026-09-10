@@ -286,7 +286,10 @@ Check every one of these before reporting success:
   `find /srv/media-backup/finished -type f -printf '%i %s %p\n' | sort`.
 - After a transfer, the remote size matches: `ssh nas2 find … -printf '%s %P\n'`
   against the same for the staging area. Do not trust rsync's exit code alone
-  on exFAT, where it cannot set the metadata it would normally verify.
+  on exFAT, where it cannot set the metadata it would normally verify. Compare
+  `%s` from `find`, never `du`, which rounds up to the allocation unit and
+  shows a couple of MB of phantom difference on every file. Any `ssh` used
+  inside a loop needs `-n`; see step 9.
 
 Report per collection: what was staged and under what name, what was asked and
 answered, and **every title left in the archive with the reason** — duplicate
@@ -302,17 +305,68 @@ so the bar is a checksum and nothing less.
 **Size and a zero exit code are not enough.** rsync verifies its own stream,
 but exFAT stores no permissions, ownership or fine-grained times, so the
 metadata it would normally compare against on a later run does not exist.
-Hash both ends and compare:
+Hash both ends and compare.
+
+**Three ways this check has quietly gone wrong**, all of them on 2026-09-08,
+all of them producing an answer that looked fine. Copy the block below rather
+than writing the loop from memory:
 
 ```bash
-remote=$(ssh nas2 sha256sum "'$dest'" | cut -d' ' -f1)
-local=$(sha256sum "$staged" | cut -d' ' -f1)
-[ "$remote" = "$local" ] || { echo "MISMATCH, keeping the archive"; exit 1; }
+STAGE=/srv/media-backup/ready_to_add/Movies
+REMOTE=/srv/dev-disk-by-uuid-78AA-077A/Movies
+files=(
+  "Demon Seed (1977) [imdbid-tt0075931]/Demon Seed (1977) [imdbid-tt0075931].mkv"
+  "Demon Seed (1977) [imdbid-tt0075931]/extras/Additional Scene.mkv"
+)
+
+verified=0
+for f in "${files[@]}"; do
+    local_hash=$(sha256sum "$STAGE/$f" | cut -d' ' -f1)
+    # ssh -n, and printf %q -- see the three notes below.
+    remote_hash=$(ssh -n nas2 "sha256sum $(printf '%q' "$REMOTE/$f")" | cut -d' ' -f1)
+    if [ -z "$remote_hash" ]; then
+        echo "NO HASH from the server for $f -- not a mismatch, a broken command"
+        exit 1
+    fi
+    [ "$local_hash" = "$remote_hash" ] || { echo "MISMATCH: $f"; exit 1; }
+    verified=$((verified + 1))
+done
+
+[ "$verified" -eq "${#files[@]}" ] \
+    || { echo "only $verified of ${#files[@]} checked"; exit 1; }
 ```
+
+1. **`ssh` reads stdin, so it eats a loop's input.** `while read f; do ... ssh
+   ... done <<EOF` runs **once** and then stops, because the first `ssh`
+   swallowed the remaining lines. Measured: three input lines, one iteration.
+   Worse, the loop **exits 0**, so it reads as a clean pass over every file.
+   That is how two of three files came to be reclaimed on one unverified
+   hash. `ssh -n` attaches stdin to `/dev/null` and fixes it.
+
+2. **Count what you checked.** A loop that ends early is indistinguishable
+   from one that passed unless the count is asserted, which is the whole
+   lesson of point 1. The `$verified` tally is not decoration.
+
+3. **Never wrap a remote path in single quotes.** This skill used to advise
+   `ssh nas2 sha256sum "'$dest'"`, and it is wrong: a path containing an
+   apostrophe closes the quote and the remote shell dies with
+   ``syntax error near unexpected token `(` ``. "L'iniziazione" is a real film
+   in this library and it did exactly that -- the empty result then compared
+   unequal and printed **MISMATCH on a copy that was byte-perfect**. Use
+   `printf '%q'`, which escapes the path for the remote shell; verified
+   against that exact filename. Where a whole block must run remotely, send it
+   as a heredoc to `ssh nas2 'bash -s'` and quote paths with double quotes on
+   the far side -- an apostrophe inside double quotes is literal.
 
 This re-reads every byte on both machines. A 20 GB title takes minutes, most
 of it on the NAS. That is the price of deleting the only other copy, and it is
 worth paying.
+
+**An empty hash is not a mismatch.** Tell them apart in the message. A real
+mismatch means the bytes differ and the disc must not be reclaimed; an empty
+result means the command never ran, which is a bug in the command. Reporting
+the second as the first sends the operator hunting a corruption that is not
+there.
 
 **Reclaim only a collection that fully verified.** Every published file
 hashed and matched, nothing skipped, no disc left in a state other than `done`,
