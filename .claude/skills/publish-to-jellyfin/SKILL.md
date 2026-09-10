@@ -289,7 +289,8 @@ Check every one of these before reporting success:
   on exFAT, where it cannot set the metadata it would normally verify. Compare
   `%s` from `find`, never `du`, which rounds up to the allocation unit and
   shows a couple of MB of phantom difference on every file. Any `ssh` used
-  inside a loop needs `-n`; see step 9.
+  inside a loop needs `-n` -- but never together with a heredoc, which `-n`
+  silently empties; see step 9.
 
 Report per collection: what was staged and under what name, what was asked and
 answered, and **every title left in the archive with the reason** — duplicate
@@ -357,6 +358,19 @@ done
    against that exact filename. Where a whole block must run remotely, send it
    as a heredoc to `ssh nas2 'bash -s'` and quote paths with double quotes on
    the far side -- an apostrophe inside double quotes is literal.
+
+4. **`-n` and a heredoc are mutually exclusive.** They are the two fixes above
+   and they cancel each other: `-n` *is* "attach stdin to `/dev/null`", so
+   `ssh -n nas2 'bash -s' <<EOF` hands the remote shell an empty script. It
+   runs nothing, prints nothing, and exits 0. Against a `find` that listed the
+   published files, that reads as **the files are not on the server** --
+   alarming, and false. Measured 2026-09-10, having made the mistake while
+   verifying a transfer that was in fact perfect.
+
+   The rule: `-n` when the command is an *argument* (`ssh -n host "sha256sum
+   ..."`), which is the loop case. No `-n` when the script arrives on *stdin*
+   (`ssh host 'bash -s' <<EOF`), because that is where the script is. A
+   heredoc block is not in a loop, so it never needed `-n` anyway.
 
 This re-reads every byte on both machines. A 20 GB title takes minutes, most
 of it on the NAS. That is the price of deleting the only other copy, and it is
