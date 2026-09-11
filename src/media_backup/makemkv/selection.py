@@ -33,6 +33,20 @@ offered separately. A disc carrying decoy playlists writes the decoys. That is
 the price of never silently dropping a film, and it is paid in disk, which is
 recoverable -- the failure it replaces was not.
 
+**The one thing that did come back, and why it is not the old detector.**
+Saban's Power Rangers, 2026-09-11: 308 titles, 287 of them the same thirteen
+segments in 287 different orders. Copying everything meant a projected 7.5 TB
+from a 46.6 GiB disc, onto a volume with 1.5 TB free and three other jobs
+running on it. Knives Out, the same day, is the same shape: 283 titles, a pool
+of 201. "Paid in disk, which is recoverable" is true right up to the point
+where the disk fills and takes the other jobs with it.
+
+So :func:`obfuscation` refuses those discs. It does not pick a title and it
+does not drop one -- the full list is handed back with the refusal, for a
+person to resolve against the disc and the playlist maps others have
+published. The forbidden thing is silently choosing; declining loudly is not
+the same act. See docs/makemkv/playlist-obfuscation.md.
+
 What remains here is description, not decision: the clip lists a title is
 built from, whether two titles are cuts of one work or separate works, and
 which file on disk each title became.
@@ -59,19 +73,63 @@ class Selection:
 
     @property
     def needs_operator(self) -> bool:
-        """Never true now, and kept because the GUI still asks.
+        """True when a person, not a retry, is what this disc is waiting on.
 
-        A disc used to be handed back when its feature could not be told from
-        its decoys. Nothing is refused for that any more: the decoys are
-        copied along with everything else and sorted out at publish time. An
-        empty disc still fails, and still needs no help -- there is nothing to
-        help with.
+        One case reaches this: playlist obfuscation, where the feature cannot
+        be told from its decoys and copying the lot would fill the volume.
+        Retrying such a disc produces the same 283 titles it produced last
+        time. An empty disc still fails and still needs no help -- there is
+        nothing to help with.
         """
-        return False
+        return self.error_kind == model.ERR_DECOY_TITLES
+
+
+#: How many distinct orderings of one identical clip list before a disc is
+#: treated as obfuscated. Measured 2026-09-11 across a 106-disc archive: the
+#: two protected discs scored 287 (Power Rangers) and 201 (Knives Out), and
+#: *every* other class on every other disc scored 1. There is no middle
+#: ground to tune against, so this sits well above the noise deliberately --
+#: too low refuses a good disc, too high only copies extra, which is the
+#: policy anyway.
+OBFUSCATION_ORDERINGS = 8
+
+
+def permutation_classes(titles) -> dict[tuple, list]:
+    """Group titles by their clip list ignoring order.
+
+    Same clips, same order -- content authored twice. Expected, and copied:
+    Hancock offers its feature that way.
+
+    Same clips, *different* order -- the same footage rearranged. Nothing
+    legitimate authors that. Seamless branching, which is what two cuts of a
+    film are, gives each cut clips the other lacks; see :func:`_is_branching`.
+
+    Different clips -- separate works, or branched cuts. Not this.
+    """
+    classes: dict[tuple, list] = {}
+    for title in titles:
+        clips = segments(title)
+        if clips:
+            classes.setdefault(tuple(sorted(clips)), []).append(title)
+    return classes
+
+
+def obfuscation(titles):
+    """The largest pile of permutations of one clip list, if it is big enough.
+
+    Returns ``(titles_in_class, distinct_orderings)`` or ``None``. Pure.
+    """
+    worst = None
+    for members in permutation_classes(titles).values():
+        orderings = {tuple(segments(t)) for t in members}
+        if len(orderings) >= OBFUSCATION_ORDERINGS:
+            if worst is None or len(orderings) > worst[1]:
+                worst = (members, len(orderings))
+    return worst
 
 
 def choose(titles) -> Selection:
-    """Every title the scan found, longest first. Pure.
+    """Every title the scan found, longest first, unless the disc is protected.
 
     Longest first because the runner reports progress in this order and an
     operator watching it wants the big one moving first, not because the
@@ -83,6 +141,23 @@ def choose(titles) -> Selection:
             False,
             reason="the disc scan reported no titles with a duration",
             error_kind=model.ERR_NO_FEATURE)
+
+    found = obfuscation(usable)
+    if found:
+        members, orderings = found
+        # The whole list goes back with the refusal. Whoever picks this up
+        # needs to match a published segment map against these titles, and
+        # cannot do that from a number.
+        return Selection(
+            False,
+            tuple(sorted(usable, key=lambda t: -t.seconds)),
+            reason=(f"{orderings} titles are the same {len(segments(members[0]))} "
+                    f"clips in different orders, all {members[0].duration}. "
+                    f"This disc hides its feature among decoy playlists; one "
+                    f"of those titles is the film and the scan cannot say "
+                    f"which. See docs/makemkv/playlist-obfuscation.md"),
+            error_kind=model.ERR_DECOY_TITLES)
+
     return Selection(True, tuple(sorted(usable, key=lambda t: -t.seconds)))
 
 

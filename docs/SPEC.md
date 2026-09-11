@@ -466,16 +466,26 @@ two must see the same list or the indices diverge.
 **The one refusal left:** a disc whose scan reports no title with a duration.
 There is nothing to copy.
 
-**One disc has since broken the cost assumption.** Saban's Power Rangers
-(2026-09-11) scans to 308 titles of which 287 are the same 13 segments in 287
-different orders — a projected 7.5 TB from a 46.6 GiB disc, onto a 1.8 TB
-volume shared with three other jobs. "Paid in disk, which is recoverable" stops
-holding when the disk fills and takes the concurrent jobs with it. The proposed
-answer refuses the disc rather than picking from it, which keeps §9's actual
-prohibition intact; the detection rule, its validation against every disc in
-the archive, and the pseudocode are in
-[`makemkv/playlist-obfuscation.md`](makemkv/playlist-obfuscation.md). Not
-implemented.
+**The second refusal, added 2026-09-11.** Saban's Power Rangers scans to 308
+titles of which 287 are the same 13 clips in 287 different orders; Knives Out,
+the same day, 283 titles with a pool of 201. Copying everything meant a
+projected 7.5 TB from a 46.6 GiB disc, onto a 1.8 TB volume shared with three
+other jobs. "Paid in disk, which is recoverable" stops holding when the disk
+fills and takes the concurrent jobs with it.
+
+Such a disc is now **refused**, not resolved: `selection.obfuscation` returns
+the largest set of titles that are one clip list in different orders, and
+`choose` hands the disc back with `ERR_DECOY_TITLES` and the full title list
+for a person to match against a published clip map. This does not decide which
+title is the feature — the prohibition above is intact. Silently picking is
+the forbidden act; declining is not. Measured against every disc in the
+archive: 2 refused, 100 accepted.
+
+A second guard measures the **selection** against free space, not the disc:
+the pre-scan check passed Power Rangers because a 46.6 GiB disc fits, and
+could not know 308 titles at 24.5 GB apiece would follow.
+
+See [`makemkv/playlist-obfuscation.md`](makemkv/playlist-obfuscation.md).
 
 **The cost, measured** over every disc scan in the archive (2026-09-08):
 255 GB → 414 GB, a factor of 1.6. Worst case Hancock, 149 GB from a 45 GB
@@ -607,9 +617,10 @@ The UI is not specified. What it must make possible is:
 Two presentation rules carry meaning:
 
 - A disc that needs a **person** is visually distinct from one that **failed**.
-  Retrying the first changes nothing; it is waiting on a human. *(With the
-  selection policy of §9 nothing currently produces this state, but the
-  distinction is part of the model and cheap to keep.)*
+  Retrying the first changes nothing; it is waiting on a human. *(Since
+  2026-09-11 exactly one thing produces this state: a playlist-obfuscated
+  disc, refused by §9's second refusal. Retrying one finds the same 283
+  titles it found last time.)*
 - Never call a title "the main feature". The system does not know that.
   Call it "longest".
 

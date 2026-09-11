@@ -79,6 +79,12 @@ class TestFailure(unittest.TestCase):
         self.assertEqual(v.outcome, FAILURE)
         self.assertIn("run short", v.reason)
 
+    def test_every_saved_title_short_is_still_a_failure(self):
+        """Four of four short is a broken copy, not an over-declared disc."""
+        v = judge(obs(titles_expected=4, titles_saved=4, files_written=4,
+                      titles_short=4))
+        self.assertEqual(v.outcome, FAILURE)
+
     def test_progress_never_reached_the_end(self):
         v = judge(obs(max_total_progress=30000))
         self.assertEqual(v.outcome, FAILURE)
@@ -120,6 +126,30 @@ class TestPartial(unittest.TestCase):
     def test_the_announcement_alone_is_enough(self):
         v = judge(obs(message_codes={m.MKV_SAVED_PARTIAL: 1}))
         self.assertEqual(v.outcome, PARTIAL)
+
+    def test_one_short_title_among_many_is_handed_over_not_failed(self):
+        """Verbatim from Mortal Engines, 2026-09-11.
+
+        27 titles, 56.9 GB, every one saved. 26 of them match their declared
+        duration within a second -- the 2:08:21 feature to +0.1s. The 27th is
+        00010.mpls, the multi-language copyright warning reel: it declares
+        330s across 66 chapters where the disc holds one 17.7s segment, so the
+        saved file is 17.7s and can never be anything else.
+
+        That one title failed the whole backup and kept 56.9 GB out of
+        finished/ until it was overridden by hand. A playlist is allowed to
+        declare more than the disc stores -- warning reels, looping menus and
+        multi-angle titles all do -- and a scan cannot tell that from a
+        truncation. So it is reported and the operator decides, exactly as a
+        missing title already is.
+        """
+        v = judge(obs(titles_expected=27, titles_saved=27, files_written=27,
+                      titles_short=1,
+                      message_codes={m.MKV_COMPLETE: 27, m.MKV_SAVED: 27}))
+        self.assertEqual(v.outcome, PARTIAL)
+        self.assertTrue(v.is_good, "26 good titles and a warning card")
+        self.assertIn("1 of 27", v.reason)
+        self.assertIn("run short", v.reason)
 
 
 class TestCancelled(unittest.TestCase):

@@ -167,156 +167,88 @@ what separates 287 identical-length decoys from 8 identical-length episodes.
 ordinary discs that were never obfuscated. It is worth recording as
 corroboration, not acting on alone.
 
-## What the application should do
+## What the application does
 
-Not resurrect the old decoy detector. That detector tried to answer *which
+Implemented 2026-09-11. Two guards, neither of which picks a title.
+
+Not a resurrection of the old decoy detector. That one tried to answer *which
 title is the feature*, got it wrong in both directions and failed silently —
 the reasoning is in
 [`selection.py`](../../src/media_backup/makemkv/selection.py)'s module
 docstring and it still stands. A scan cannot tell you what a title *is*.
 
 But there is a narrower question a scan *can* answer: **does this disc have a
-shape that makes copying everything ruinous?** That does not require picking a
-winner. It requires noticing 287 permutations and stopping.
+shape that makes copying everything ruinous?** That needs no winner picked. It
+needs 287 permutations noticed, and a stop.
 
-The machinery for stopping already exists and is currently unreachable:
+The machinery for stopping was already there and unreachable:
 `model.ERR_DECOY_TITLES`, `gui_app.NEEDS_OPERATOR`, the "Needs you" state and
-its amber row tag are all still wired. Only `selection.choose` no longer emits
-the error.
+its amber row tag. Only `selection.choose` had stopped emitting the error.
 
 ### Guard 1 — the structural detector
 
-```python
-# in selection.py
+`selection.permutation_classes` groups titles by clip list ignoring order;
+`selection.obfuscation` returns the largest class whose distinct orderings
+reach `OBFUSCATION_ORDERINGS` (8). `choose` refuses on that with
+`ERR_DECOY_TITLES`, handing back **the full title list** — whoever resolves it
+must match a published clip map against those titles, and cannot do that from
+a count. `Selection.needs_operator` is true for that error and nothing else,
+so the GUI renders "Needs you" in amber rather than "Failed".
 
-#: Distinct orderings of one identical segment multiset before a disc is
-#: treated as obfuscated. Power Rangers measured 287; every other disc in a
-#: 106-disc, 966-title archive measured 1. Set well above the noise: a false positive
-#: stops a good disc, a false negative only copies extra, which is already
-#: the policy.
-OBFUSCATION_ORDERINGS = 8
+Run against every disc in the archive, 102 with titles: **2 refused** (Power
+Rangers 308 titles, Knives Out 283), **100 accepted**. No false positives.
 
-
-def permutation_classes(titles) -> dict[tuple, list]:
-    """Group titles by their segment multiset, ignoring order.
-
-    Same multiset, same order  -> content authored twice. Expected; copied.
-    Same multiset, differing order -> the same footage rearranged. Decoys.
-    Different multisets -> separate works, or branched cuts. Not this.
-    """
-    classes = defaultdict(list)
-    for title in titles:
-        segs = segments(title)           # the existing helper; handles DVD "1-28"
-        if segs:
-            classes[tuple(sorted(segs))].append(title)
-    return classes
-
-
-def obfuscation(titles):
-    """The largest permutation class, if one is big enough to matter.
-
-    Returns (titles_in_class, distinct_orderings) or None.
-    """
-    worst = None
-    for multiset, members in permutation_classes(titles).items():
-        orderings = {tuple(segments(t)) for t in members}
-        if len(orderings) >= OBFUSCATION_ORDERINGS:
-            if worst is None or len(orderings) > worst[1]:
-                worst = (members, len(orderings))
-    return worst
-
-
-def choose(titles) -> Selection:
-    usable = [t for t in titles if t.seconds > 0]
-    if not usable:
-        return Selection(False,
-                         reason="the disc scan reported no titles with a duration",
-                         error_kind=model.ERR_NO_FEATURE)
-
-    found = obfuscation(usable)
-    if found:
-        members, orderings = found
-        # Do NOT pick one. Do NOT drop the rest. Hand the disc to a person
-        # with everything needed to identify the real playlist by hand.
-        return Selection(
-            False,
-            titles=tuple(usable),        # keep the full list for the operator
-            reason=(f"{orderings} titles are the same {len(segments(members[0]))} "
-                    f"segments in different orders, all {members[0].duration} "
-                    f"-- playlist obfuscation. One is the feature and the scan "
-                    f"cannot say which. See docs/makemkv/playlist-obfuscation.md"),
-            error_kind=model.ERR_DECOY_TITLES)
-
-    return Selection(True, tuple(sorted(usable, key=lambda t: -t.seconds)))
-```
-
-`needs_operator` then stops being hardwired `False`:
-
-```python
-    @property
-    def needs_operator(self) -> bool:
-        return self.error_kind == model.ERR_DECOY_TITLES
-```
-
-and the GUI's existing `NEEDS_OPERATOR` path renders it as "Needs you" in
-amber, with no further change.
+**Its blind spot:** it needs clip lists. A scan with no `TINFO:26` gives it
+nothing to group, and such a disc is copied in full exactly as before —
+`tests.test_backup_runner.test_forty_titles_of_one_length_are_copied_rather_than_refused`
+pins that. Every real obfuscated disc seen so far reports its clip lists.
 
 ### Guard 2 — the budget check
 
-Independent of the detector, and the more important of the two: it catches an
-obfuscated disc the pattern *fails* to recognise, and it catches any other
-runaway. This is what would actually have saved the three concurrent jobs.
+Independent of the detector, and the one that would actually have saved the
+three concurrent jobs: it catches an obfuscated disc the pattern *misses*, and
+any other runaway.
 
-```python
-# before the first save of a disc, in the runner
+The runner already checked free space — against `req.disc_size_bytes`. Power
+Rangers is a 46.6 GiB disc and passed that comfortably; the check ran before
+the scan and could not have known the run would then queue 308 titles at
+24.5 GB apiece. So a second check runs once a selection exists, against
+`selection.expected_bytes(chosen)`, and refuses with `ERR_NO_SPACE` before the
+first title rather than during the twentieth.
 
-def affordable(selection, dest, headroom=1.15):
-    """Will what the scan promised fit, with room to spare?
+It is deliberately conservative: `expected_bytes` is MakeMKV's estimate of a
+title's size *on the disc*, which a remux comes in under (0.84 on a Blu-ray),
+so the check over-states what will be written. That is the right direction for
+a guard whose job is catching runs that are multiples over, not shaving
+margins — but it does mean a disc needing very nearly all the remaining space
+can be refused when it would have fitted.
 
-    expected_bytes() already exists and sums the scan's own per-title sizes.
-    Power Rangers promised 308 x 24.5 GB = 7.5 TB against 1.5 TB free.
-    """
-    need = expected_bytes(selection) * headroom
-    free = shutil.disk_usage(dest).free
-    if need > free:
-        return Selection(False,
-                         titles=selection.titles,
-                         reason=(f"the scan promises {need/1e12:.1f} TB and "
-                                 f"{free/1e12:.1f} TB is free"),
-                         error_kind=model.ERR_NO_SPACE)
-    return selection
-```
+`free_bytes` is now injectable into `BackupRunner` (`free_space=`), for the
+same reason `spawn` is: a test asserting what a run does must not also assert
+how much room the host has. The suite runs on an 8 GB tmpfs while the Hancock
+fixture alone declares 42 GB of titles, so without that the result depended on
+the machine.
 
-`ERR_NO_SPACE` already exists. A disc that trips this should stop before the
-first title, not partway through — the damage is done by the twentieth title,
-not the first.
+### What changed in the SPEC
 
-### What this would change in the SPEC
+§9's "save every title the scan reports" gains a second refusal beside the
+existing "no title with a duration". The distinction worth holding: §9 forbids
+*deciding which title is the feature*, and this does not decide — it declines,
+with the full list preserved. Silently picking is the forbidden act; refusing
+out loud is not.
 
-Implementing Guard 1 is a deliberate narrowing of a stated policy, not a bug
-fix, so it does not happen quietly:
-
-* **§9 "Save every title the scan reports. That is the whole policy."** would
-  gain a second refusal alongside the existing "no title with a duration" one.
-  The distinction to hold on to is that §9 forbids *deciding which title is the
-  feature*, and this does not decide — it refuses, with the full title list
-  preserved for the operator. The forbidden thing is silently picking; the
-  proposed thing is loudly declining.
-* **§13's note** that "with the selection policy of §9 nothing currently
-  produces this state" would stop being true — the needs-a-person state would
-  have exactly one producer.
-
-Guard 2 changes no policy at all. It refuses a disc that cannot fit, which is
-`ERR_NO_SPACE` doing the job it already has.
+§13's note that "with the selection policy of §9 nothing currently produces
+this state" is no longer true — the needs-a-person state has exactly one
+producer.
 
 ### Worth having either way
 
-* **Log the scan.** The title inventory currently goes into `collection.json`
-  but the `info` output itself is not kept, so `FPL_MainFeature` — present or
-  absent — leaves no record. It is one file per disc and it is the only
-  evidence of what the engine concluded.
-* **Record the segment map in the failure reason.** It is what an operator
-  needs to search for, and it is already in `model.Title.segments`.
+* **Log the scan.** The title inventory goes into `collection.json` but the
+  `info` output itself is not kept, so `FPL_MainFeature` — present or absent —
+  leaves no record. One file per disc, and the only evidence of what the
+  engine concluded.
+* **Record the clip map in the failure reason.** It is what an operator
+  searches for, and it is already in `model.Title.segments`.
 
 ## Recovering an obfuscated disc by hand
 
@@ -363,6 +295,132 @@ the file has 10; that is the default selection string dropping a `havecore` or
 Note that the decoys are the *same duration* as the feature — `7438.472` s on
 both title 9 and title 289. Duration confirms nothing here. Only the ordering
 does.
+
+## Collecting discs, so a rule can be found
+
+Resolving a disc by hand works and does not accumulate. Every obfuscated disc
+costs the same afternoon as the last one, and nothing learned on Power Rangers
+made Knives Out cheaper.
+
+What would scale is knowing **how the disc itself decides**. A real player is
+told which playlist to run — by navigation commands in `MovieObject.bdmv`, or
+by the BD-J application in `BDMV/JAR`. That answer is on the disc, in the
+clear, and it is small.
+
+`media_backup.forensics` captures it.
+
+### Why this is cheap
+
+**AACS encrypts `BDMV/STREAM` and nothing else.** Playlists, clip info, BD-J
+objects and the Java archives are all readable without a key — this is already
+recorded in [SPEC §16.4](../SPEC.md). Measured on Knives Out, 2026-09-11:
+
+```
+/BDMV/STREAM        59 files   48,974 MB   encrypted, never captured
+everything else   1531 files       80 MB   captured whole
+```
+
+**And it needs no root.** Mounting does, and `udisks` automount is
+deliberately off for `sr*` so a disc is never mounted under a running
+`makemkvcon`. So `media_backup.udf` reads the UDF filesystem straight off the
+block device through `libudfread`, which the `cdrom` group already permits and
+which ships with `libbluray`.
+
+One trap worth keeping: libudfread's `UDF_DT_DIR` is **1**, not the 4 that
+`dirent.h` uses. A walk keyed on 4 finds no directories at all and cheerfully
+reports a Blu-ray as ten files.
+
+### Using it
+
+```bash
+python3 -m media_backup.forensics capture /dev/sr3
+python3 -m media_backup.forensics truth <capture-dir> \
+    --playlist 00988.mpls --how forum-map --evidence 'matched the US retail map; verified by watching'
+python3 -m media_backup.forensics summary
+```
+
+`capture` refuses a drive that another process already has open — a capture
+that thrashes a four-hour rip is a poor trade for 80 MB. `--force` overrides.
+
+### Where the captures live
+
+`Config.forensics_path`, defaulting to `media_path/forensics` — beside
+`collections/`, `finished/` and `cancelled/`, and created with them by
+`ensure_directories`. Unlike `finished_path` and `cancelled_path` it is never
+renamed into, so it is free to sit on another filesystem, and there is an
+argument that it should:
+
+```
+KNIVES_OUT-7051b1979008a925/
+  disc/        80.0 MB   the navigation tree, verbatim
+  scan/         2.2 MB   the raw makemkvcon info transcript
+  capture.json  308 KB   every file on the disc: size, sha256, copied or skipped and why
+  jars.json     404 KB   5 archives, 2532 entries, per-entry sha256, obfuscation flag
+  analysis.json  48 KB   the pool, the classes, the titles outside it
+  truth.json      ~1 KB  the answer, once a person has found it
+```
+
+**82 MB of that is reproducible** by putting the disc back in a drive and
+capturing again. `truth.json` is not: it is a record of research, it is about
+a kilobyte, and if the volume is ever repurposed it is the only part that
+cannot be rebuilt. Worth keeping somewhere durable — the repository, or
+rsynced to the media server with everything else.
+
+A bundle holds the disc's navigation tree verbatim under `disc/`, the raw
+`makemkvcon info` transcript under `scan/`, an inventory of every file with
+sizes and SHA-256 (including what was skipped and why), an index of every
+Java archive, the obfuscation analysis, and — once someone has worked it out —
+`truth.json`.
+
+**`truth.json` is the half that cannot be automated and the half the corpus is
+worthless without.** A hundred captured discs with no confirmed answers teach
+nothing. It records `how` the answer was reached — a forum clip map, the
+engine's own `FPL_MainFeature`, or watching it — because those are not equally
+strong, and a rule trained on the weak ones is a rule that loses a film.
+
+### What the scan itself now preserves
+
+The raw `info` transcript is kept whole. `collection.json` records a parsed
+title inventory but never the transcript, so whether MakeMKV resolved an
+`FPL_MainFeature` — the engine's own answer to this exact question — has been
+leaving no trace at all. Knives Out: `fpl_main_feature: false`.
+
+### What has already been tried, and failed
+
+Recorded so the next person does not spend the afternoon again. All measured
+on Knives Out, 2026-09-11:
+
+| attempt | result |
+|---|---|
+| `#####.mpls` strings in the JARs | **none.** 880 classes across two 4 MB archives, zero literal playlist filenames. BD-J addresses playlists numerically. |
+| `PlayPL`-shaped navigation commands in `MovieObject.bdmv` | **none matched a playlist on the disc**, across 45 KB. Either the parse is wrong or this disc drives playback from BD-J — `index.bdmv` would settle it. |
+| five-digit ASCII runs in the BDJO files | **a trap.** `00004.bdjo` contains `00006`, and `00006` is both a playlist *and* `/BDMV/JAR/00006.jar`. Playlist ids, JAR ids and application ids share one five-digit namespace. |
+
+And one finding that shapes the work: **the BD-J applications are themselves
+obfuscated.** 707 of 733 classes are named `a`, `aa`, `ab`; the short-name
+ratio is 0.965. The capture flags this per archive (`name_obfuscated`), because
+anyone planning to read the application should know beforehand that the names
+carry nothing and structure is all there is.
+
+Knives Out also keeps a second copy of its application at
+`/BDMV/JAR/03000/809ad4ac00000` — no extension, 707 classes. The indexer finds
+archives by magic rather than by name for that reason.
+
+### What a corpus could answer
+
+None of these is testable on two discs. All become testable on a dozen:
+
+* Is the real playlist reachable from `index.bdmv` → BDJO → the application's
+  accessible-playlist table, when that table is parsed properly rather than
+  grepped?
+* Do the decoys share a structural tell the feature lacks — a clip ordering
+  that no `.clpi` timestamp sequence supports, say, which would be decidable
+  from the captured clip info alone?
+* Is the real playlist's position predictable within the pool (highest
+  `.mpls` number, lowest, first by index)? Power Rangers' answer was
+  `00988.mpls` against decoys from `00009` upward.
+* Does the studio or the authoring house predict the scheme? Both discs so far
+  are Lionsgate.
 
 ## Declared duration is not what is on the disc
 
@@ -428,68 +486,59 @@ Any playlist declaring more than the disc stores. All common, none faults:
 
 ### The fix
 
-Keep the check — it is the only real completeness test the project has, and
-the reasoning behind it in `_match_output`'s docstring is sound. Narrow what it
-is allowed to *fail* on.
+**The first attempt at this was wrong, and the test suite caught it.**
 
-The discriminator is already in hand and costs nothing: the runner does **one
-`makemkvcon` invocation per title**, so it knows whether MakeMKV vouched for
-each one individually. It just does not currently keep that — `_save_one`
-consumes every line into one shared `BackupObservation`, so `obs.message_codes`
-ends up as `{'5036': 27, ...}` for the attempt with no way back to which title
-each code came from.
+The reasoning above ran: a copy that stopped early would not emit
+`MKV_COMPLETE`, so a short title MakeMKV vouched for must have been
+over-declared by its playlist. The runner does one invocation per title, so
+tracking which titles MakeMKV reported complete is cheap, and the check could
+then fail only on titles it did not vouch for.
+
+`test_a_copy_that_stopped_early_fails_despite_a_success_message` says
+otherwise, and its name says it outright: a truncated copy **does** arrive
+with a success message. That is why the duration check exists at all. Keying
+the check on MakeMKV's own claim would have re-opened precisely the hole the
+check was built to close. The premise was never measured — it was assumed from
+one disc where the two happened to coincide.
+
+What separates the two cases is not the message. It is **how much of the disc
+is short**:
 
 ```python
-# runner._save_one -- return per-title success, not just the exit code.
-# Counting 5036 across the title's own loop avoids touching _consume, which
-# returns None and accumulates into the shared obs.
+# outcome.judge, step 8
 
-def _save_one(self, index, title, obs, log, started):
-    ...
-    before = obs.message_codes.get(messages.MKV_COMPLETE, 0)   # 5036
-    for line in self._iter_lines(process, ...):
-        self._log(log, line)
-        self._consume(line, obs)
-        self._check_watchdogs(obs, started)
-    saw_complete = obs.message_codes.get(messages.MKV_COMPLETE, 0) > before
-    return process.wait(), saw_complete
-
-
-# runner._save_titles -- keep the set MakeMKV vouched for
-
-    vouched: set[int] = set()
-    for position, title in enumerate(chosen.titles):
-        code, complete = self._save_one(index, title, obs, log, started)
-        codes.append(code)
-        if complete and code == 0:
-            vouched.add(title.index)
-    obs.vouched_titles = vouched
-
-
-# runner._match_output -- a short title only counts against the disc when
-# MakeMKV did NOT claim it finished
-
-    elif title.seconds and measured < title.seconds - tolerance:
-        if index in obs.vouched_titles:
-            # MakeMKV saved this title completely and it still runs short:
-            # the playlist declared more than the disc stores. Record it so
-            # the operator can see it; do not fail the disc for it.
-            obs.titles_over_declared += 1
-            logger.info("job %s: %s runs %.0fs, playlist declares %ds -- "
-                        "declared-only content, not a short copy",
-                        self.request.job_id, name, measured, title.seconds)
-        else:
-            obs.titles_short += 1
+    if obs.titles_short:
+        summary = (f"{obs.titles_short} of {obs.files_written} saved "
+                   f"title(s) run short of what the disc says they are")
+        if obs.titles_short >= obs.files_written:
+            return Verdict(FAILURE, summary, detail)
+        return Verdict(PARTIAL, summary, detail)
 ```
 
-`judge()` then fails on `titles_short` exactly as it does today, and reports
-`titles_over_declared` as detail rather than as a fault. A copy genuinely cut
-off mid-title still fails: it would not be in `vouched_titles`.
+Every saved title coming up short is a broken copy and fails. Some of them
+coming up short is reported and handed to the operator.
+
+This is not a new policy — it is step 6's policy, applied consistently. A
+*missing* title has always been `PARTIAL`, on the stated grounds that "one
+lost extra is not the same news as a lost feature, and the operator decides
+which this was". A *short* title was `FAILURE`. Nothing justified the
+asymmetry: both mean some content did not fully arrive, and neither can be
+attributed to the feature or to an extra without the title-identity guess
+that SPEC §9 forbids.
+
+Mortal Engines is now `partial`, which `Verdict.is_good` already treats as
+worth keeping, so the disc finishes and publishes. The truncation test still
+fails its run, because there one title of one is short.
 
 **What this deliberately does not do** is compare durations to decide which
-titles are "real". That is the §9 mistake in a new costume. It only stops the
-app from calling a disc failed on the strength of a number the disc never
-promised to honour.
+titles are real. Two discarded candidates, both measured against the archive
+before being dropped:
+
+* *chapters per distinct clip* — Mortal Engines' warning reel is 66 chapters
+  over one clip, which looked decisive until the archive said Superman's
+  actual feature is 44 over one and Road House's is 28. No gap.
+* *absolute size* — an 8 MB title is obviously not a feature, but saying so
+  in code is the §9 guess wearing a different hat.
 
 ### The cost of leaving it
 

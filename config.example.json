@@ -2,6 +2,7 @@
   "media_path": "/srv/media-backup",
   "finished_path": null,
   "cancelled_path": null,
+  "forensics_path": null,
   "makemkvcon": "/usr/local/bin/makemkvcon",
   "cache_mb": 1024,
   "decrypt": true,

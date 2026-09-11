@@ -49,6 +49,13 @@ class Config:
     #: Cancelled collections are moved here, not deleted -- a mis-click must
     #: not destroy hours of ripping.
     cancelled_path: Path | None = None
+    #: Where obfuscated discs' navigation data is captured for study. Unlike
+    #: the two above this is never renamed into, so it may sit on another
+    #: filesystem -- and arguably should: a collection is reproducible by
+    #: re-ripping the disc, while the confirmed answers accumulated here are
+    #: somebody's afternoons and cannot be re-derived. Defaults to
+    #: media_path/forensics. See docs/makemkv/playlist-obfuscation.md.
+    forensics_path: Path | None = None
 
     makemkvcon: Path = Path("/usr/local/bin/makemkvcon")
     cache_mb: int = 1024
@@ -110,6 +117,10 @@ class Config:
         return self.cancelled_path or (self.media_path / "cancelled")
 
     @property
+    def forensics_dir(self) -> Path:
+        return self.forensics_path or (self.media_path / "forensics")
+
+    @property
     def lock_path(self) -> Path:
         return self.media_path / ".media-backup.lock"
 
@@ -146,7 +157,8 @@ def load(path: Path | None = None) -> Config:
     kwargs = {}
     for name, value in data.items():
         f = known.get(name)
-        if f is None or value is None and name in ("finished_path", "cancelled_path"):
+        if f is None or value is None and name in (
+                "finished_path", "cancelled_path", "forensics_path"):
             if f is not None:
                 kwargs[name] = None
             continue
@@ -222,7 +234,8 @@ def validate(cfg: Config) -> list[Problem]:
 
 def ensure_directories(cfg: Config) -> None:
     """Create the standard subdirectories. Assumes validate() passed."""
-    for path in (cfg.collections_path, cfg.finished_dir, cfg.cancelled_dir):
+    for path in (cfg.collections_path, cfg.finished_dir, cfg.cancelled_dir,
+                 cfg.forensics_dir):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -233,7 +246,16 @@ def free_bytes(cfg: Config) -> int:
         return 0
 
 
+def room_for(free: int, cfg: Config, size_bytes: int) -> bool:
+    """True if ``size_bytes`` fits in ``free`` with the margin intact.
+
+    Split from :func:`has_room_for` so a caller that already knows the free
+    space -- or is a test that must not depend on the host's -- can ask the
+    same question without touching the filesystem.
+    """
+    return free >= int(size_bytes * 1.05) + cfg.min_free_margin_bytes
+
+
 def has_room_for(cfg: Config, disc_size_bytes: int) -> bool:
     """True if a disc of this size can be written with the margin intact."""
-    needed = int(disc_size_bytes * 1.05) + cfg.min_free_margin_bytes
-    return free_bytes(cfg) >= needed
+    return room_for(free_bytes(cfg), cfg, disc_size_bytes)

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
 from .. import events, mkv, model
-from ..config import Config, has_room_for
+from ..config import Config, free_bytes, room_for
 from . import command, inspect as layouts, isolation, messages, selection
 from .enumeration import DriveIndex, Resolution, parse_drives, resolve
 from .outcome import BackupObservation, OutcomePolicy, Verdict, judge
@@ -179,6 +179,7 @@ class BackupRunner:
         ejector: Callable[..., None] | None = None,
         policy: OutcomePolicy | None = None,
         drive_index: DriveIndex | None = None,
+        free_space: Callable[[], int] | None = None,
     ) -> None:
         self.request = request
         #: Shared by every job the manager starts, so a round of jobs runs
@@ -189,6 +190,10 @@ class BackupRunner:
         self._spawn = spawn
         self._clock = clock
         self._ejector = ejector
+        #: Injectable for the same reason ``spawn`` is: a test that asserts
+        #: what a run does must not also be asserting how much room the
+        #: machine running it happens to have.
+        self._free_space = free_space or (lambda: free_bytes(request.cfg))
         self._policy = policy or OutcomePolicy(
             size_ratio_floor=request.cfg.size_ratio_floor,
             size_ratio_ceiling=request.cfg.size_ratio_ceiling)
@@ -286,7 +291,8 @@ class BackupRunner:
             return
 
         # 2. Will it fit?
-        if req.disc_size_bytes and not has_room_for(req.cfg, req.disc_size_bytes):
+        if req.disc_size_bytes and not room_for(
+                self._free_space(), req.cfg, req.disc_size_bytes):
             self._fail(
                 f"not enough free space for {req.disc_size_bytes / 1024**3:.1f} GB "
                 f"plus the configured margin", model.ERR_NO_SPACE)
@@ -316,6 +322,24 @@ class BackupRunner:
         logger.info("job %s: saving %d of %d title(s): %s",
                     req.job_id, len(chosen.titles), len(self._titles),
                     ", ".join(t.source or str(t.index) for t in chosen.titles))
+
+        # 5b. Room for what will actually be written, which is not the size of
+        #     the disc. Step 2 checked the disc -- 46.6 GiB for Power Rangers,
+        #     comfortably inside 1.5 TB free -- and could not have known the
+        #     run would then queue 308 titles at 24.5 GB apiece. A disc that
+        #     authors its feature more than once writes more than it holds
+        #     (Hancock: 149 GB from 45), so this has to be judged against the
+        #     selection, and it can only be judged once there is one.
+        #
+        #     Refused before the first title rather than during the twentieth:
+        #     a run that fills the volume takes every other job on it down.
+        wanted = selection.expected_bytes(chosen)
+        if wanted and not room_for(self._free_space(), req.cfg, wanted):
+            self._fail(
+                f"the scan says these {len(chosen.titles)} title(s) come to "
+                f"{wanted / 1024**4:.2f} TB, which does not fit with the "
+                f"configured margin", model.ERR_NO_SPACE)
+            return
 
         # 6. The copy itself.
         self._state(model.COPYING, "copying")

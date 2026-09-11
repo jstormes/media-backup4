@@ -188,11 +188,26 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
     #    title runs and the file says how long it is; a copy that stopped
     #    early is short. Independent of everything MakeMKV printed, and
     #    unbothered by the container overhead that makes size a poor guide.
+    #
+    #    Graded the same way step 6 grades a missing title, and for the same
+    #    reason: one short extra is not the same news as a short feature, and
+    #    a scan cannot tell which a title is. Every saved title coming up
+    #    short is a broken copy and fails. Some of them coming up short is
+    #    reported and handed to the operator.
+    #
+    #    Measured 2026-09-11: Mortal Engines failed on 1 short title of 27,
+    #    and that title was the multi-language copyright warning reel --
+    #    00010.mpls declares 330s across 66 chapters where the disc holds one
+    #    17.7s segment. The feature matched its declared length to +0.1s and
+    #    the other 25 extras to within a second. A playlist may declare more
+    #    than the disc stores; a warning reel, a looping menu and a
+    #    multi-angle title all do, and none of them is a fault.
     if obs.titles_short:
-        return Verdict(FAILURE,
-                       f"{obs.titles_short} of {obs.files_written} saved "
-                       f"title(s) run short of what the disc says they are",
-                       detail)
+        summary = (f"{obs.titles_short} of {obs.files_written} saved "
+                   f"title(s) run short of what the disc says they are")
+        if obs.titles_short >= obs.files_written:
+            return Verdict(FAILURE, summary, detail)
+        return Verdict(PARTIAL, summary, detail)
 
     # 9. More on disk than those titles were said to weigh means something
     #    was saved more than once. Every byte asked for is present, so this is

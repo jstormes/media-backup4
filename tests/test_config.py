@@ -10,6 +10,35 @@ from unittest import mock
 from media_backup import config
 
 
+class TestForensicsPath(unittest.TestCase):
+    """Where captured disc navigation data is kept."""
+
+    def test_it_defaults_beside_the_other_output(self):
+        cfg = config.Config(media_path=Path("/srv/media-backup"))
+        self.assertEqual(cfg.forensics_dir,
+                         Path("/srv/media-backup/forensics"))
+
+    def test_it_can_live_on_another_filesystem(self):
+        """Unlike finished/ and cancelled/, nothing is renamed into it.
+
+        And it arguably should live elsewhere: a collection can be rebuilt by
+        re-ripping the disc, while a confirmed answer in truth.json is
+        somebody's afternoon and cannot be re-derived.
+        """
+        cfg = config.Config(
+            media_path=Path("/srv/media-backup"),
+            forensics_path=Path("/nas/forensics"))
+        self.assertEqual(cfg.forensics_dir, Path("/nas/forensics"))
+
+    def test_an_explicit_null_falls_back_to_the_default(self):
+        """A null in config.json used to raise Path(None)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({"forensics_path": None}))
+            self.assertEqual(config.load(path).forensics_dir,
+                             Path("/srv/media-backup/forensics"))
+
+
 class TestLoad(unittest.TestCase):
     def test_missing_file_yields_defaults(self):
         cfg = config.load(Path("/nonexistent/config.json"))

@@ -10,8 +10,9 @@ import unittest
 
 from media_backup import model
 from media_backup.makemkv.selection import (
-    CUT_VARIANTS, SEPARATE_WORKS, SINGLE, Selection, choose, expected_bytes,
-    match_files, relationship, segments, shared_ratio,
+    CUT_VARIANTS, OBFUSCATION_ORDERINGS, SEPARATE_WORKS, SINGLE, Selection,
+    choose, expected_bytes, match_files, obfuscation, permutation_classes,
+    relationship, segments, shared_ratio,
 )
 
 
@@ -111,7 +112,7 @@ class TestRealDiscs(unittest.TestCase):
         self.assertEqual(len(choose([title(i, f"0:11:{i:02d}") for i in range(12)])
                              .titles), 12)
 
-    def test_a_disc_with_no_timed_titles_is_the_one_refusal_left(self):
+    def test_a_disc_with_no_timed_titles_is_refused(self):
         chosen = choose([title(0, "")])
         self.assertFalse(chosen)
         self.assertEqual(chosen.error_kind, model.ERR_NO_FEATURE)
@@ -242,3 +243,146 @@ class TestSelectionObject(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+#: Verbatim from "Knives Out" (Lionsgate), read off the disc 2026-09-11. The
+#: disc scans to 283 titles, 201 of which are these same fifteen clips in 201
+#: different orders. These are the first ten of that pool.
+KNIVES_OUT_POOL = [
+    (1, "510,505,513,512,502,506,507,508,504,503,520,509,519,518,515", "00008.mpls"),
+    (3, "510,505,513,512,502,506,503,508,519,518,509,507,504,520,515", "00027.mpls"),
+    (6, "510,505,513,512,502,508,520,504,509,519,506,503,518,507,515", "00033.mpls"),
+    (7, "510,505,513,512,502,504,519,520,503,507,508,509,518,506,515", "00034.mpls"),
+    (11, "510,505,513,512,502,520,518,509,508,507,506,503,504,519,515", "00047.mpls"),
+    (12, "510,505,513,512,502,508,518,509,519,506,507,503,504,520,515", "00049.mpls"),
+    (13, "510,505,513,512,502,507,506,518,509,504,520,508,519,503,515", "00050.mpls"),
+    (14, "510,505,513,512,502,503,519,504,518,507,508,506,509,520,515", "00052.mpls"),
+    (15, "510,505,513,512,502,506,520,503,518,519,507,509,508,504,515", "00056.mpls"),
+    (16, "510,505,513,512,502,520,506,507,504,519,508,509,503,518,515", "00060.mpls"),
+]
+
+#: Verbatim from "Saban's Power Rangers" (Lionsgate), 2026-09-11: 308 titles,
+#: 287 of them thirteen clips in 287 different orders. First ten of the pool.
+POWER_RANGERS_POOL = [
+    (0, "505,507,502,501,506,509,504,513,511,508,514,512,510", "00009.mpls"),
+    (1, "505,501,507,502,506,511,508,513,509,504,512,514,510", "00014.mpls"),
+    (2, "505,501,502,507,506,509,511,504,508,513,514,512,510", "00017.mpls"),
+    (3, "505,507,502,501,506,509,504,511,508,513,514,512,510", "00021.mpls"),
+    (4, "505,501,507,502,506,512,513,509,508,504,514,511,510", "00028.mpls"),
+    (5, "505,501,507,502,506,508,512,511,504,513,509,514,510", "00029.mpls"),
+    (6, "505,501,507,502,506,508,512,504,509,514,513,511,510", "00034.mpls"),
+    (7, "505,501,507,502,506,508,509,513,512,514,504,511,510", "00037.mpls"),
+    (8, "505,501,507,502,506,514,511,513,512,504,509,508,510", "00038.mpls"),
+    (9, "505,502,507,501,506,509,511,513,504,508,514,512,510", "00040.mpls"),
+]
+
+#: The one that is actually the film, matched against the segment map the
+#: MakeMKV forum publishes for the US retail pressing. Ripped by hand and
+#: verified 2026-09-11; it is one of the 287 and looks like all the others.
+POWER_RANGERS_REAL = (
+    289, "505,501,507,502,506,509,511,513,508,504,514,512,510", "00988.mpls")
+
+
+def pool(rows, duration):
+    return [title(i, duration, 24_000_000_000, segs, src, chapters=16)
+            for i, segs, src in rows]
+
+
+class TestPlaylistObfuscation(unittest.TestCase):
+    """Discs that hide the feature among permutations of its own clip list.
+
+    Copying everything is the policy and it is right, up to the disc that
+    turns it into terabytes. Power Rangers projected 7.5 TB from a 46.6 GiB
+    disc onto a volume with 1.5 TB free and three other jobs on it, and wrote
+    106 GiB of decoys before anyone noticed. Knives Out is the same shape.
+
+    So these discs are refused -- not resolved. Nothing here picks the film.
+    """
+
+    def test_knives_out_is_refused(self):
+        chosen = choose(pool(KNIVES_OUT_POOL, "2:10:13"))
+        self.assertFalse(chosen)
+        self.assertEqual(chosen.error_kind, model.ERR_DECOY_TITLES)
+
+    def test_power_rangers_is_refused(self):
+        chosen = choose(pool(POWER_RANGERS_POOL, "2:03:58"))
+        self.assertFalse(chosen)
+        self.assertEqual(chosen.error_kind, model.ERR_DECOY_TITLES)
+
+    def test_the_refusal_is_a_person_not_a_retry(self):
+        """Retrying finds the same 283 titles. A human has to break the tie."""
+        chosen = choose(pool(KNIVES_OUT_POOL, "2:10:13"))
+        self.assertTrue(chosen.needs_operator)
+
+    def test_the_whole_list_comes_back_with_the_refusal(self):
+        """Whoever resolves this matches a published clip map against these.
+
+        A count cannot be matched against anything, so the titles travel with
+        the refusal even though nothing will be copied from them yet.
+        """
+        titles = pool(KNIVES_OUT_POOL, "2:10:13")
+        chosen = choose(titles)
+        self.assertEqual(len(chosen.titles), len(titles))
+
+    def test_the_reason_says_what_was_seen(self):
+        chosen = choose(pool(POWER_RANGERS_POOL, "2:03:58"))
+        self.assertIn("10 titles", chosen.reason)
+        self.assertIn("13 clips", chosen.reason)
+        self.assertIn("2:03:58", chosen.reason)
+
+    def test_the_real_playlist_is_not_singled_out(self):
+        """It is in the pool and it looks like every other member of it.
+
+        This is the whole difficulty: title 289 is the film, and nothing in
+        the scan says so. If this test ever starts passing for the wrong
+        reason -- because something in here learned to pick -- that is the
+        mistake section 9 of the SPEC exists to prevent.
+        """
+        rows = POWER_RANGERS_POOL + [POWER_RANGERS_REAL]
+        chosen = choose(pool(rows, "2:03:58"))
+        self.assertFalse(chosen)
+        self.assertEqual(chosen.error_kind, model.ERR_DECOY_TITLES)
+
+    def test_content_authored_twice_is_not_obfuscation(self):
+        """Hancock offers each cut twice, with an identical clip list.
+
+        Same clips *and* same order is a disc that authored its feature
+        twice. It is copied twice, as it has been since 2026-09-08.
+        """
+        self.assertTrue(choose(HANCOCK))
+        self.assertEqual(len(choose(HANCOCK).titles), 4)
+
+    def test_branched_cuts_are_not_obfuscation(self):
+        """Each cut carries clips the other lacks. That is what branching is."""
+        self.assertIsNone(obfuscation(HANCOCK))
+
+    def test_a_double_feature_is_not_obfuscation(self):
+        disc = [title(0, "1:23:43", segments="1-15"),
+                title(1, "1:35:43", segments="1-12")]
+        self.assertIsNone(obfuscation(disc))
+
+    def test_a_season_of_episodes_is_not_obfuscation(self):
+        """Same runtime, different clips. Length alone means nothing."""
+        disc = [title(i, "0:45:00", segments=f"{i}") for i in range(12)]
+        self.assertIsNone(obfuscation(disc))
+
+    def test_one_reordering_short_of_the_threshold_is_left_alone(self):
+        """The gap measured on real discs is 201-and-287 against 1.
+
+        Nothing in a 106-disc archive scored between them, so the threshold
+        is not balanced on a knife edge -- but it is a threshold, and a disc
+        under it is copied rather than refused.
+        """
+        rows = POWER_RANGERS_POOL[:OBFUSCATION_ORDERINGS - 1]
+        self.assertTrue(choose(pool(rows, "2:03:58")))
+
+    def test_permutation_classes_group_by_clips_not_order(self):
+        classes = permutation_classes(pool(KNIVES_OUT_POOL, "2:10:13"))
+        self.assertEqual(len(classes), 1, "one clip list, ten orders")
+        self.assertEqual(len(next(iter(classes.values()))), 10)
+
+    def test_a_dvd_cell_range_is_expanded_before_grouping(self):
+        """DVDs spell a clip list "1-28"; the grouping must see through it."""
+        classes = permutation_classes([title(0, "1:00:00", segments="1-3"),
+                                       title(1, "1:00:00", segments="3,2,1")])
+        self.assertEqual(len(classes), 1)

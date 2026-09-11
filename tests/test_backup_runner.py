@@ -196,10 +196,17 @@ class RunnerTestCase(unittest.TestCase):
                         (scan or fx.DVD_SCAN).splitlines()]
                        + [(saving or fx.MKV_SUCCESS).splitlines()] * saves)
 
+    #: What the fake machine reports free. Larger than any fixture disc so a
+    #: test asserting what a run *does* is not also asserting how much room
+    #: the host happens to have -- the suite runs on an 8 GB tmpfs and the
+    #: Hancock fixture alone declares 42 GB of titles.
+    FREE_SPACE = 10 * 1024**4
+
     def run_job(self, harness, request=None):
         runner = BackupRunner(
             request or self.request(), harness.emit,
-            spawn=harness.spawn, clock=harness.clock, ejector=harness.eject)
+            spawn=harness.spawn, clock=harness.clock, ejector=harness.eject,
+            free_space=lambda: self.FREE_SPACE)
         runner.start()
         runner.join(timeout=10)
         return runner
@@ -332,6 +339,39 @@ class TestFailures(RunnerTestCase):
         self.run_job(h, self.request(cfg=self.cfg))
         self.assertEqual(h.final.error_kind, model.ERR_NO_SPACE)
         self.assertFalse(any("backup" in a for a in h.argvs))
+
+    def test_a_selection_bigger_than_the_disc_is_measured_against_the_disk(self):
+        """Step 2 checks the disc; this checks what will actually be written.
+
+        Power Rangers, 2026-09-11: a 46.6 GiB disc that fits the free-space
+        check comfortably, and a selection of 308 titles at 24.5 GB apiece
+        that does not. The disc's own size says nothing about the run -- a
+        disc authoring its feature more than once writes more than it holds,
+        and Hancock already writes 149 GB from 45.
+
+        Refused before the first title: a run that fills the volume takes
+        every other job on it down with it.
+        """
+        two_cuts = "\n".join([
+            'TCOUNT:2',
+            'TINFO:0,2,0,"Film"', 'TINFO:0,9,0,"1:32:13"',
+            'TINFO:0,11,0,"20000000000"', 'TINFO:0,26,0,"1,2,3,4"',
+            'TINFO:1,2,0,"Film"', 'TINFO:1,9,0,"1:42:14"',
+            'TINFO:1,11,0,"22000000000"', 'TINFO:1,26,0,"1,5,3,6"',
+        ])
+        h = self.scripted(scan=two_cuts)
+        runner = BackupRunner(
+            self.request(), h.emit, spawn=h.spawn, clock=h.clock,
+            ejector=h.eject,
+            # Room for the 4.5 GB disc, nowhere near the 42 GB of titles.
+            free_space=lambda: 20 * 1024**3)
+        runner.start()
+        runner.join(timeout=10)
+
+        self.assertEqual(h.final.error_kind, model.ERR_NO_SPACE)
+        self.assertIn("title(s) come to", h.final.verdict.reason)
+        self.assertFalse([a for a in h.argvs if "mkv" in a],
+                         "refused before the first title, not during the run")
 
 
 class TestCancellation(RunnerTestCase):
@@ -537,13 +577,20 @@ class TestTitleSelection(RunnerTestCase):
         self.assertIn("more than once", h.final.verdict.reason)
         self.assertTrue(h.final.verdict.is_good, "the bytes are all there")
 
-    def test_a_disc_of_decoy_playlists_is_copied_rather_than_refused(self):
-        """Playlist obfuscation used to hand the disc back to the operator.
+    def test_forty_titles_of_one_length_are_copied_rather_than_refused(self):
+        """Length alone never refuses a disc, and this fixture is only length.
 
-        It no longer does. Telling a decoy from a feature was the same guess
-        as telling a feature from an episode, and getting it wrong lost real
-        films. Everything is copied and the pile is sorted out at publish
-        time; the cost is disk, which is recoverable.
+        Telling a decoy from a feature by runtime was the same guess as
+        telling a feature from an episode, and getting it wrong lost real
+        films. That has not changed: forty titles at 2:18 could as easily be
+        a box set.
+
+        Note what this scan does *not* carry -- a clip list. Since 2026-09-11
+        a disc is refused when many titles are the same clips in different
+        orders (see makemkv.selection.obfuscation), and no TINFO:26 here means
+        there is nothing for that to see. A real obfuscated disc reports its
+        clip lists and is caught; one that somehow did not would still be
+        copied in full, as this one is.
         """
         h = self.scripted(scan=fx.DECOY_SCAN)
         h.on_line = lambda proc, line: self.make_output(
@@ -552,6 +599,33 @@ class TestTitleSelection(RunnerTestCase):
 
         self.assertEqual(h.final.error_kind, "")
         self.assertEqual(len([a for a in h.argvs if "mkv" in a]), 40)
+
+    def test_the_forensics_parser_reads_a_scan_the_same_way_this_does(self):
+        """Two parsers, one attribute mapping. Pin them together.
+
+        The runner reads a live process and fills in stream counts as it
+        goes; media_backup.forensics reads a transcript already on disk. They
+        map the same TINFO attributes onto the same fields, and a corpus
+        analysed differently from the app that produced it would be a corpus
+        that answers a slightly different question.
+        """
+        from media_backup import forensics
+
+        h = self.scripted(scan=fx.DVD_SCAN)
+        h.on_line = lambda proc, line: self.make_output()
+        self.run_job(h)
+
+        live = {t.index: t for t in h.final.titles}
+        saved = {t.index: t for t in forensics.titles_from_scan(fx.DVD_SCAN)}
+        self.assertEqual(sorted(live), sorted(saved), "same titles found")
+        for index, title in live.items():
+            other = saved[index]
+            self.assertEqual(
+                (title.duration, title.segments, title.source,
+                 title.size_bytes, title.chapters),
+                (other.duration, other.segments, other.source,
+                 other.size_bytes, other.chapters),
+                f"title {index} read differently")
 
     def test_short_titles_are_saved_like_any_others(self):
         """Three minutes was once too short to be worth saving. No longer."""
