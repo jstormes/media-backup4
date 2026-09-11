@@ -372,6 +372,31 @@ done
    (`ssh host 'bash -s' <<EOF`), because that is where the script is. A
    heredoc block is not in a loop, so it never needed `-n` anyway.
 
+5. **A process pattern matches the process doing the matching.** `pgrep -f`
+   and `pkill -f` search the whole command line, and your own shell's command
+   line contains the pattern you just typed. So this waits forever:
+
+   ```bash
+   # WRONG -- the until-loop's own cmdline contains "ready_to_add5"
+   until ! pgrep -f "ready_to_add5" >/dev/null; do sleep 20; done
+   ```
+
+   Measured 2026-09-10: the gated job sat idle for fifteen minutes after the
+   job it was waiting for had finished, because it was waiting on itself. The
+   same trap kills the caller outright with `pkill -f`, which took out two of
+   this session's own shells (exit 144) before it reached its target.
+
+   **Do not wait on a name. Wait on a PID**, which cannot be ambiguous:
+
+   ```bash
+   until ! kill -0 "$PID" 2>/dev/null; do sleep 20; done
+   ```
+
+   If a pattern is unavoidable, exclude self and parent -- `pgrep -f PAT |
+   grep -qv -e "^$$\$" -e "^$PPID\$"` -- and for `pkill`, get the pid list
+   first, drop `$$` and `$PPID`, then kill by number. Better still, run the
+   two jobs in one script, one after the other: no gate, nothing to match.
+
 This re-reads every byte on both machines. A 20 GB title takes minutes, most
 of it on the NAS. That is the price of deleting the only other copy, and it is
 worth paying.
