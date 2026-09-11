@@ -466,6 +466,17 @@ two must see the same list or the indices diverge.
 **The one refusal left:** a disc whose scan reports no title with a duration.
 There is nothing to copy.
 
+**One disc has since broken the cost assumption.** Saban's Power Rangers
+(2026-09-11) scans to 308 titles of which 287 are the same 13 segments in 287
+different orders — a projected 7.5 TB from a 46.6 GiB disc, onto a 1.8 TB
+volume shared with three other jobs. "Paid in disk, which is recoverable" stops
+holding when the disk fills and takes the concurrent jobs with it. The proposed
+answer refuses the disc rather than picking from it, which keeps §9's actual
+prohibition intact; the detection rule, its validation against every disc in
+the archive, and the pseudocode are in
+[`makemkv/playlist-obfuscation.md`](makemkv/playlist-obfuscation.md). Not
+implemented.
+
 **The cost, measured** over every disc scan in the archive (2026-09-08):
 255 GB → 414 GB, a factor of 1.6. Worst case Hancock, 149 GB from a 45 GB
 disc, because it authors each of its two cuts twice and offers seventeen of
@@ -743,6 +754,13 @@ Parsing the Hancock Blu-ray's 175 playlists directly:
 A decoy is a playlist of a hundred play items pointing at the *same* clip: a
 feature's duration and no other property of one. MakeMKV already filters
 these — it reported `TCOUNT:4`.
+
+**This does not generalise to every disc that gets called obfuscated.** A
+second form, measured on Saban's Power Rangers 2026-09-11, builds each decoy
+from the feature's *real* clips in a permuted order — same duration, same
+clip count, same chapter count — and MakeMKV does not filter it: 308 titles
+survived, 287 of them one 13-segment multiset in 287 distinct orders. See
+[`makemkv/playlist-obfuscation.md`](makemkv/playlist-obfuscation.md).
 
 Also useful: **BDMV navigation metadata is not AACS-encrypted.** Only the
 streams are, so `index.bdmv`, `MovieObject` and every `.mpls` can be parsed off

@@ -17,6 +17,7 @@ output. Where something is *unverified*, it says so explicitly.
 | [`engine-protocol.md`](engine-protocol.md) | The `guiserver` shared-memory protocol — a richer alternative if robot mode ever becomes insufficient. |
 | [`message-codes.md`](message-codes.md) | The `MSG` code table: where it lives on disk, how to decode any code, and the codes this project acts on. |
 | [`track-selection.md`](track-selection.md) | Which audio, subtitle and closed-caption tracks end up in the output, why `--profile` cannot change it, and the one setting that can. |
+| [`playlist-obfuscation.md`](playlist-obfuscation.md) | When playlist metadata lies: decoy playlists that hide the feature among hundreds of permutations, and declared durations that fail good backups. How to recognise each, which signals are worthless, and how to rip an obfuscated disc by hand. |
 | [`test-suite.md`](test-suite.md) | Comprehensive test plan with verified invocations, output examples, error cases, and a phased test sequence for the AI agent. |
 
 ## Decision: use robot mode
