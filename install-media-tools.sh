@@ -41,6 +41,13 @@ PACKAGES=(
                 # feature the VTS layout separates two films more directly
                 # than MakeMKV's cell ranges, which carry no meaning across
                 # titles on a DVD at all.
+    vlc         # Plays a rip, which is the only check that answers "is this
+                # watchable?" rather than "is this well-formed?". ffprobe reads
+                # a container's declarations and believes them; a title whose
+                # header says 8:20 and whose pictures stop at 3:08 passes every
+                # structural test there is. Mrs. Doubtfire's Blu-ray carries
+                # two of those. Also the fastest way to answer "which film is
+                # this?" on a disc that names neither of its two features.
 )
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -156,6 +163,21 @@ else
     bad "mkvpropedit not on PATH"
 fi
 
+if command -v vlc >/dev/null; then
+    ok "vlc $(vlc --version 2>/dev/null | head -1 | awk '{print $3}')"
+    # Decode without a display, so this works over ssh and in a check script.
+    # --play-and-exit or it waits forever; dummy interface, video and audio or
+    # it needs X and a sound card it may not have.
+    if cvlc --intf dummy --vout dummy --aout dummy --no-video-title-show \
+            --play-and-exit "$WORK/sample.mkv" >/dev/null 2>&1; then
+        ok "  decodes a file headless (so it can play a rip over ssh)"
+    else
+        warn "  headless playback failed -- the GUI may still work on the desktop"
+    fi
+else
+    bad "vlc not on PATH"
+fi
+
 # Needs a disc in a drive, so this is the one that cannot be proved here.
 if command -v lsdvd >/dev/null; then
     ok "lsdvd present (needs a DVD in a drive to do anything; not tested here)"
@@ -174,6 +196,7 @@ if [[ $failed -eq 0 ]]; then
     echo "  What is in it?        mediainfo FILE"
     echo "  Name the file itself: mkvpropedit FILE --edit info --set title='Film (Year)'"
     echo "  Read the disc:        lsdvd /dev/sr0"
+    echo "  Watch it:             vlc FILE        (or: cvlc --play-and-exit FILE)"
 else
     echo "  Some tools are missing or not working -- see the FAIL lines above."
     exit 1

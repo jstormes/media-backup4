@@ -146,6 +146,32 @@ import sys; sys.exit(1 if any(p.is_fatal for p in probs) else 0)
 " || bad "config.validate() reported a fatal problem"
 fi
 
+say "IMDb lookups"
+# Publishing turns a disc into "Name (Year) [imdbid-tt...]" and gets the id
+# from the mirror on nas2, because imdb.com cannot be read by a program at all
+# -- 403 to a non-browser user-agent, an empty 202 to a browser one, measured
+# 2026-09-11. The failure this check exists for is silent: a machine without
+# the credentials publishes every film with no tag and no error, which reads as
+# a style choice rather than a missing dependency and is discovered later, from
+# a library. The credentials live in ~/.profile, which is login scope, so a
+# desktop-launched GUI has them and a fresh ssh session may not.
+if [[ -z "${MEDIA_BACKUP_IMDB_USER:-}" || -z "${MEDIA_BACKUP_IMDB_PASSWORD:-}" ]]; then
+    warn "MEDIA_BACKUP_IMDB_USER/_PASSWORD not set in this shell -- publishing would
+        tag nothing. They belong in ~/.profile; see AGENT.md."
+else
+    ok "MEDIA_BACKUP_IMDB_USER=$MEDIA_BACKUP_IMDB_USER (password set)"
+    if ! command -v mariadb >/dev/null; then
+        warn "no mariadb client on PATH -- cannot check the connection from here"
+    elif rows=$(mariadb -h "${MEDIA_BACKUP_IMDB_HOST:-nas2}" \
+                        -u "$MEDIA_BACKUP_IMDB_USER" -p"$MEDIA_BACKUP_IMDB_PASSWORD" \
+                        "${MEDIA_BACKUP_IMDB_DATABASE:-imdb}" -N -B \
+                        -e "select count(*) from title_basics;" 2>/dev/null); then
+        ok "  ${MEDIA_BACKUP_IMDB_HOST:-nas2} answers: title_basics has $rows rows"
+    else
+        bad "  cannot query ${MEDIA_BACKUP_IMDB_HOST:-nas2} -- publishing would tag nothing"
+    fi
+fi
+
 say "Result"
 printf '  %d passed, %d warnings, %d failed\n' "$pass" "$warn" "$fail"
 [[ $fail -eq 0 ]] && echo "  Setup is intact." || echo "  Something did not survive -- see the FAIL lines."
