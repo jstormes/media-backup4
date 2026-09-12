@@ -13,6 +13,8 @@ from media_backup.makemkv.selection import (
     CUT_VARIANTS, OBFUSCATION_ORDERINGS, SEPARATE_WORKS, SINGLE, Selection,
     choose, expected_bytes, match_files, obfuscation, permutation_classes,
     relationship, segments, shared_ratio,
+    CONTENT, DEGENERATE, DUPLICATE, FRAGMENT, PLAY_ALL, classify, play_all_parts,
+    clips_discriminate, play_all_by_runtime,
 )
 
 
@@ -386,3 +388,318 @@ class TestPlaylistObfuscation(unittest.TestCase):
         classes = permutation_classes([title(0, "1:00:00", segments="1-3"),
                                        title(1, "1:00:00", segments="3,2,1")])
         self.assertEqual(len(classes), 1)
+
+
+#: Verbatim from "brave new world" disc 1 (BD), read off the disc 2026-09-10:
+#: a "play all" and the three episodes it is made of. The episodes share no
+#: clips, which is what separates this from a feature and its slices.
+BRAVE_NEW_WORLD = [
+    title(0, "2:13:17", 37_600_000_000, "0,1,2", chapters=12),
+    title(1, "0:41:08", 11_570_000_000, "2", chapters=4),
+    title(2, "0:43:48", 12_340_000_000, "1", chapters=4),
+    title(3, "0:48:21", 13_690_000_000, "0", chapters=4),
+]
+
+#: Verbatim from Speed Racer / Mach GoGoGo disc 1 (BD), 2026-09-12: eleven
+#: episodes on their own clips, and one playlist of 901 play-items that are
+#: all the same clip.
+SPEED_RACER = [title(i, "0:25:44", 4_490_000_000, f"000{51+i}") for i in range(11)] + [
+    title(11, "16:29:35", 30_000_000_000, ",".join(["00002"] * 901)),
+]
+
+
+class TestSortingThePileAtPublishTime(unittest.TestCase):
+    """What each title is, once the ripper has copied all of them.
+
+    None of this changes what is saved. It is the vocabulary the publish step
+    needs to say why a title was not published.
+    """
+
+    def test_a_play_all_is_not_mistaken_for_content(self):
+        v = classify(BRAVE_NEW_WORLD)
+        self.assertEqual(v[0], PLAY_ALL)
+
+    def test_and_its_episodes_are_not_mistaken_for_fragments(self):
+        """The bug this exists to prevent.
+
+        Each episode's clip list is a strict subset of the play-all's, which
+        is the textbook fragment shape. Publishing on that reading would
+        replace nine episodes with three two-hour files.
+        """
+        v = classify(BRAVE_NEW_WORLD)
+        self.assertEqual([v[i] for i in (1, 2, 3)], [CONTENT] * 3)
+
+    def test_a_feature_and_its_slices_still_read_as_fragments(self):
+        """Hancock offers seventeen single clips of the film as titles.
+
+        Its clips have many subsets, but they overlap and no disjoint set of
+        siblings covers the feature, so there is no play-all here and the
+        slices stay fragments. Measured on the disc 2026-09-07.
+        """
+        feature = title(0, "1:42:14", segments=HANCOCK_EXTENDED, chapters=16)
+        slices = [title(i, "0:05:50", segments=c)
+                  for i, c in enumerate(HANCOCK_EXTENDED.split(",")[:6], start=1)]
+        v = classify([feature] + slices)
+        self.assertEqual(v[0], CONTENT)
+        self.assertTrue(all(v[s.index] == FRAGMENT for s in slices))
+
+    def test_one_clip_repeated_is_degenerate(self):
+        """Speed Racer's 00001.mpls: 901 play-items, all the same clip.
+
+        Not content, and its declared 989 minutes would wreck any size
+        estimate summed across titles.
+        """
+        v = classify(SPEED_RACER)
+        self.assertEqual(v[11], DEGENERATE)
+
+    def test_episodes_of_equal_length_all_survive(self):
+        """Ten of Speed Racer's eleven episodes run 25:44 to the second.
+
+        Equal runtimes are only dangerous where there is no clip identity to
+        compare -- on a Blu-ray each episode carries its own clip.
+        """
+        v = classify(SPEED_RACER)
+        self.assertEqual(sum(1 for i in range(11) if v[i] == CONTENT), 11)
+
+    def test_the_richer_copy_survives_a_duplicate_pair(self):
+        rich = title(0, "1:42:14", 22_000_000_000, HANCOCK_EXTENDED, chapters=16)
+        rich.streams = 23
+        poor = title(1, "1:42:14", 22_000_000_000, HANCOCK_EXTENDED, chapters=16)
+        poor.streams = 15
+        v = classify([rich, poor])
+        self.assertEqual((v[0], v[1]), (CONTENT, DUPLICATE))
+
+    def test_a_disc_of_disjoint_episodes_has_no_play_all(self):
+        """No parent, so nothing to be the union of."""
+        eps = [title(i, "0:25:00", segments=f"{i}") for i in range(6)]
+        self.assertEqual(play_all_parts(eps), {})
+
+    def test_two_parts_are_not_enough_to_invent_a_play_all(self):
+        """A parent needs at least two disjoint children that *cover* it."""
+        parent = title(0, "1:00:00", segments="1,2,3")
+        part = title(1, "0:20:00", segments="1")
+        self.assertEqual(play_all_parts([parent, part]), {})
+
+
+def dvd_title(index, duration, size, segments, streams):
+    """A DVD title as MakeMKV reports it: a cell range local to this title."""
+    out = title(index, duration, size, segments)
+    out.streams = streams
+    return out
+
+
+#: Verbatim from Challenge of the Superfriends, the first season, disc 2 side A
+#: (DVD), read off collection.json 2026-09-12. A play-all and the seven
+#: episodes behind it. Every title reports the cell range "1" or the range the
+#: play-all covers, so no two of them can be compared on clips -- and the
+#: episodes' runtimes are within eleven seconds of each other.
+SUPERFRIENDS_SIDE_A = [
+    dvd_title(0, "2:32:04", 6_856_570_880, "1,2,3,4,5,6,7", 7),
+    dvd_title(1, "0:21:43", 979_191_808, "1", 7),
+    dvd_title(2, "0:21:43", 979_425_280, "1", 7),
+    dvd_title(3, "0:21:39", 976_340_992, "1", 7),
+    dvd_title(4, "0:21:44", 979_951_616, "1", 7),
+    dvd_title(5, "0:21:42", 978_235_392, "1", 7),
+    dvd_title(6, "0:21:49", 983_470_080, "1", 7),
+    dvd_title(7, "0:21:44", 979_955_712, "1", 7),
+]
+
+#: The same box set, disc 2 side B. Two episodes, one of them authored twice --
+#: once with a commentary track, eight streams against six -- plus a
+#: thirteen-minute retrospective and a five-minute menu piece. The pair that is
+#: one episode twice is byte-identical in declared size; the pair that is two
+#: different episodes is not.
+SUPERFRIENDS_SIDE_B = [
+    dvd_title(0, "0:43:17", 1_983_604_736, "1,2", 8),
+    dvd_title(1, "0:21:40", 977_303_552, "1", 7),
+    dvd_title(2, "0:21:37", 1_006_301_184, "1", 8),
+    dvd_title(3, "0:13:42", 491_526_144, "1", 4),
+    dvd_title(4, "0:05:14", 187_373_568, "1,2,3,4", 4),
+    dvd_title(5, "0:21:37", 1_006_301_184, "1", 6),
+]
+
+#: Verbatim from the August Rush DVD, 2026-09-12: the feature and a
+#: ten-minute featurette. No two titles report the same cell range, so the
+#: fallback heuristic has nothing to catch and only the media type saves the
+#: featurette.
+AUGUST_RUSH = [
+    dvd_title(0, "1:53:15", 3_910_000_000, "1-31", 9),
+    dvd_title(1, "0:10:04", 300_000_000, "1,2,3,4,5,6,7", 6),
+]
+
+
+class TestClipListsThatCannotBeCompared(unittest.TestCase):
+    """A DVD's cell range is local to its title; a Blu-ray's clip id is not.
+
+    SPEC section 16.3. This is the fact that decides whether the duplicate,
+    play-all and fragment rules have any evidence to work from.
+    """
+
+    def test_a_dvd_of_episodes_does_not_discriminate(self):
+        self.assertFalse(clips_discriminate(SUPERFRIENDS_SIDE_A))
+
+    def test_a_bluray_of_episodes_does(self):
+        self.assertTrue(clips_discriminate(SPEED_RACER))
+
+    def test_one_list_on_two_runtimes_cannot_be_naming_content(self):
+        """Seven episodes all reporting "1" with seven different runtimes."""
+        self.assertFalse(clips_discriminate(SUPERFRIENDS_SIDE_A[1:]))
+
+    def test_a_spelling_it_has_never_seen_is_not_an_answer(self):
+        """dvd.clip_list writes "1002/1". Nothing there says {1..N}.
+
+        Written after the rule read "every numeric list is {1..N}" as true of a
+        disc that had no numeric lists at all -- all() over nothing is True --
+        and declared a globally-addressed clip list title-local.
+        """
+        cells = [title(0, "0:21:51", segments="1002/1"),
+                 title(1, "0:21:45", segments="1003/1")]
+        self.assertTrue(clips_discriminate(cells))
+
+    def test_the_fallback_misses_a_dvd_whose_range_starts_high(self):
+        """Giant's second side, a DVD, reports "31-40,41-56" for its feature.
+
+        Section 16.3 measured "every DVD title expands to exactly {1..N}" over
+        21 scans; at 161 discs there is one exception, and the guess calls it
+        global. Pinned because it is the argument for passing the media type
+        rather than guessing -- not because the guess should be fixed.
+        """
+        giant = [title(0, "1:48:13", segments="31-40,41-56"),
+                 title(1, "0:02:58", segments="1,2")]
+        self.assertTrue(clips_discriminate(giant))
+
+
+class TestTheOperatorsKindSteersTheFilters(unittest.TestCase):
+    """What the collection holds is the operator's to say, and it changes this.
+
+    Nothing here changes what the ripper saves. These are publish-time
+    verdicts, and the failure they prevent is a season published short.
+    """
+
+    def test_a_dvd_play_all_is_found_by_runtime(self):
+        """2:32:04 is 1303+1303+1299+1304+1302+1309+1304 to the second."""
+        v = classify(SUPERFRIENDS_SIDE_A, model.KIND_SERIES, clips_global=False)
+        self.assertEqual(v[0], PLAY_ALL)
+
+    def test_and_all_seven_episodes_survive_it(self):
+        """The bug that published a 2:32 file and dropped seven episodes.
+
+        Every episode's cell range is a subset of the play-all's, which is the
+        fragment shape -- on a Blu-ray. Here it is an artefact of numbering.
+        """
+        v = classify(SUPERFRIENDS_SIDE_A, model.KIND_SERIES, clips_global=False)
+        self.assertEqual([v[i] for i in range(1, 8)], [CONTENT] * 7)
+
+    def test_two_episodes_of_the_same_runtime_are_both_kept(self):
+        """Side A's episodes 1 and 2 both run 21:43.
+
+        They differ by 233 KB in declared size, which is the only evidence a
+        DVD offers that they are different footage. Keying duplicates on
+        runtime alone loses an episode.
+        """
+        v = classify(SUPERFRIENDS_SIDE_A, model.KIND_SERIES, clips_global=False)
+        self.assertEqual((v[1], v[2]), (CONTENT, CONTENT))
+
+    def test_the_same_episode_twice_is_one_episode(self):
+        """Side B's 21:37 pair are 1,006,301,184 bytes each.
+
+        One carries a commentary track: eight streams against six. Same
+        footage, so the richer copy is published and the other is named in the
+        report as a duplicate.
+        """
+        v = classify(SUPERFRIENDS_SIDE_B, model.KIND_SERIES, clips_global=False)
+        self.assertEqual((v[2], v[5]), (CONTENT, DUPLICATE))
+
+    def test_the_short_play_all_on_side_b_is_found_too(self):
+        """43:17 is 21:40 + 21:37, and the five-minute piece is not a parent."""
+        v = classify(SUPERFRIENDS_SIDE_B, model.KIND_SERIES, clips_global=False)
+        self.assertEqual((v[0], v[4]), (PLAY_ALL, CONTENT))
+
+    def test_without_a_kind_the_play_all_is_published_rather_than_guessed_at(self):
+        """The safe direction: an operator sees an extra file, not a gap.
+
+        A runtime sum is strong evidence on an episodic disc and a false
+        positive waiting to happen on a disc of extras, so it is only applied
+        where the operator has said the disc holds episodes.
+        """
+        v = classify(SUPERFRIENDS_SIDE_A, model.KIND_UNKNOWN, clips_global=False)
+        self.assertEqual(v[0], CONTENT)
+        self.assertEqual(sum(1 for k in v.values() if k == CONTENT), 8)
+
+    def test_a_dvd_featurette_is_not_a_fragment_of_the_feature(self):
+        """August Rush: "1,2,3,4,5,6,7" inside "1-31" is numbering, not content.
+
+        The old reading dropped the ten-minute featurette as a slice of the
+        film. Nothing about the two cell ranges says they overlap.
+        """
+        v = classify(AUGUST_RUSH, model.KIND_MOVIE, clips_global=False)
+        self.assertEqual((v[0], v[1]), (CONTENT, CONTENT))
+
+    def test_a_bluray_feature_is_never_demoted_to_a_play_all(self):
+        """A film offered whole and as two halves is the play-all shape.
+
+        With ``KIND_MOVIE`` the longest title is the film by the operator's
+        word, so it stays and its halves read as fragments.
+        """
+        film = title(0, "1:40:00", 20_000_000_000, "1,2")
+        halves = [title(1, "0:50:00", 10_000_000_000, "1"),
+                  title(2, "0:50:00", 10_000_000_000, "2")]
+        v = classify([film] + halves, model.KIND_MOVIE, clips_global=True)
+        self.assertEqual(v[0], CONTENT)
+        self.assertEqual([v[1], v[2]], [FRAGMENT, FRAGMENT])
+
+    def test_but_a_shorter_play_all_of_extras_is_still_found(self):
+        """Mrs. Doubtfire's Blu-ray: 36:55 covering seven featurettes.
+
+        Suppressing the play-all rule outright on a film disc would publish
+        that lump and drop the seven. Only the longest title is protected.
+        """
+        feature = title(0, "2:05:11", 32_050_000_000, "1")
+        parent = title(1, "0:36:55", 2_190_000_000, "32,33,34,35,36,37,38")
+        parts = [title(2 + i, "0:03:30", 200_000_000, str(32 + i))
+                 for i in range(7)]
+        v = classify([feature, parent] + parts, model.KIND_MOVIE,
+                     clips_global=True)
+        self.assertEqual((v[0], v[1]), (CONTENT, PLAY_ALL))
+        self.assertTrue(all(v[2 + i] == CONTENT for i in range(7)))
+
+
+class TestPlayAllByRuntime(unittest.TestCase):
+    """Recognising a play-all from the clock, for discs with no clip identity."""
+
+    def test_the_parts_must_sum_to_the_parent(self):
+        parent = title(0, "1:00:00")
+        parts = [title(1, "0:20:00"), title(2, "0:20:00")]
+        self.assertEqual(play_all_by_runtime([parent] + parts), {})
+
+    def test_and_then_it_is_recognised(self):
+        parent = title(0, "0:40:00")
+        parts = [title(1, "0:20:00"), title(2, "0:20:00")]
+        self.assertEqual(sorted(t.index for t in
+                                play_all_by_runtime([parent] + parts)[0]), [1, 2])
+
+    def test_the_parts_must_be_near_equal_in_length(self):
+        """Episodes of one show are. A feature and its trailer are not.
+
+        Without this, subset-sum over a pile of extras finds a combination
+        that adds up to the feature on most discs.
+        """
+        feature = title(0, "1:30:00")
+        extras = [title(1, "1:00:00"), title(2, "0:30:00")]
+        self.assertEqual(play_all_by_runtime([feature] + extras), {})
+
+    def test_the_largest_reading_wins(self):
+        """Seven episodes is a better answer than a pair that happens to fit."""
+        parts = [title(i, "0:21:00") for i in range(1, 8)]
+        parent = title(0, "2:27:00")
+        self.assertEqual(len(play_all_by_runtime([parent] + parts)[0]), 7)
+
+    def test_a_degenerate_title_cannot_be_a_parent(self):
+        """Speed Racer's 16:29:35 of one clip repeated, against the episodes.
+
+        classify marks it degenerate before the play-all rules run, so it is
+        never offered as a parent of the eleven real episodes.
+        """
+        v = classify(SPEED_RACER, model.KIND_SERIES, clips_global=True)
+        self.assertEqual(v[11], DEGENERATE)
+        self.assertEqual(sum(1 for i in range(11) if v[i] == CONTENT), 11)
