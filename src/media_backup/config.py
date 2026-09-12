@@ -123,6 +123,13 @@ class Config:
     #: regional titles, title_episode for season and episode numbers.
     #:
     #: The credentials come from the environment
+    #: Move the default-audio flag to an English track on every file written,
+    #: keeping every track. Off means the disc's own choice stands, which on
+    #: some releases is not English. The alternative -- having MakeMKV keep
+    #: only English audio -- wrote a 3.85 GB file with no audio at all on a
+    #: Japanese-language disc; see media_backup.tracks.
+    default_audio_english: bool = True
+
     #: (MEDIA_BACKUP_IMDB_USER / _PASSWORD), not from config.json, so a
     #: working tree carries no password at all. This one guards a read-only
     #: mirror of public data on the LAN and is not a secret, but a project

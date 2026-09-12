@@ -5,6 +5,7 @@ process is injected, and the clock with it, so watchdog tests are instant.
 There is no sleep anywhere in this file.
 """
 
+import dataclasses
 import signal
 import tempfile
 import threading
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from unittest import mock
 
+from media_backup import tracks
 from media_backup import events, model
 from media_backup.config import Config
 from media_backup.makemkv import isolation, outcome
@@ -202,11 +204,21 @@ class RunnerTestCase(unittest.TestCase):
     #: Hancock fixture alone declares 42 GB of titles.
     FREE_SPACE = 10 * 1024**4
 
+    #: Injected for the same reason FREE_SPACE is. The real one runs mkvmerge
+    #: and mkvpropedit against the file just written, and these tests write
+    #: fixtures that are not Matroska at all -- one is a 4.4 GB hole with no
+    #: header, which mkvmerge reads to the end looking for one. The flagging
+    #: itself is tested in test_tracks.py, without a subprocess.
+    @staticmethod
+    def no_reflagging(path):
+        return []
+
     def run_job(self, harness, request=None):
         runner = BackupRunner(
             request or self.request(), harness.emit,
             spawn=harness.spawn, clock=harness.clock, ejector=harness.eject,
-            free_space=lambda: self.FREE_SPACE)
+            free_space=lambda: self.FREE_SPACE,
+            set_default_audio=self.no_reflagging)
         runner.start()
         runner.join(timeout=10)
         return runner
@@ -245,6 +257,73 @@ class TestSuccessfulBackup(RunnerTestCase):
     def test_emits_progress(self):
         self.assertTrue(self.h.progress_events())
         self.assertAlmostEqual(self.h.progress_events()[-1].total_pct, 100.0)
+
+
+class TestTheDefaultAudioTrack(RunnerTestCase):
+    """Every written file gets an English audio track flagged as the default.
+
+    The flagging itself is tested in test_tracks.py. What matters here is that
+    the run does it, does it to the file it just wrote, records it, and is not
+    derailed when it cannot.
+    """
+
+    def scripted_with(self, flagger, cfg=None):
+        h = self.scripted()
+        h.on_line = lambda proc, line: self.make_output()
+        runner = BackupRunner(
+            self.request(**({"cfg": cfg} if cfg else {})), h.emit,
+            spawn=h.spawn, clock=h.clock,
+            ejector=h.eject, free_space=lambda: self.FREE_SPACE,
+            set_default_audio=flagger)
+        runner.start()
+        runner.join(timeout=10)
+        return h
+
+    def test_every_file_written_is_flagged_and_only_after_it_exists(self):
+        seen = []
+
+        def recorder(path):
+            assert path.exists(), f"{path.name} flagged before it was written"
+            seen.append(path)
+            return [tracks.Change(2, "flag-default", True, "test")]
+
+        h = self.scripted_with(recorder)
+        self.assertEqual(sorted(p.name for p in seen),
+                         ["Fresh Horses-A0_t00.mkv", "Fresh Horses-A1_t01.mkv",
+                          "Fresh Horses-A2_t02.mkv", "Fresh Horses-A3_t03.mkv"])
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
+
+    def test_files_already_defaulting_to_english_are_not_counted(self):
+        """An empty change list means the header was left alone."""
+        h = self.scripted_with(lambda path: [])
+        self.assertEqual(h.final.verdict.detail["tracks_reflagged"], 0)
+
+    def test_reflagged_files_are_counted_in_the_report(self):
+        h = self.scripted_with(
+            lambda path: [tracks.Change(2, "flag-default", True, "test")])
+        self.assertEqual(h.final.verdict.detail["tracks_reflagged"], 4)
+
+    def test_a_header_that_cannot_be_written_does_not_fail_the_disc(self):
+        """The copy is correct either way; the wrong track just plays first.
+
+        Failing a 27 GB backup over a flag would be the worst trade in the
+        program.
+        """
+        def raiser(path):
+            raise tracks.TrackError("mkvpropedit: read-only file system")
+
+        h = self.scripted_with(raiser)
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
+        self.assertEqual(h.final.verdict.detail["tracks_reflagged"], 0)
+
+    def test_the_step_can_be_turned_off(self):
+        """An operator who wants the disc's own choice left alone."""
+        seen = []
+        h = self.scripted_with(
+            lambda path: seen.append(path) or [],
+            cfg=dataclasses.replace(self.cfg, default_audio_english=False))
+        self.assertEqual(seen, [])
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
 
 
 class TestFailures(RunnerTestCase):
@@ -362,7 +441,7 @@ class TestFailures(RunnerTestCase):
         h = self.scripted(scan=two_cuts)
         runner = BackupRunner(
             self.request(), h.emit, spawn=h.spawn, clock=h.clock,
-            ejector=h.eject,
+            ejector=h.eject, set_default_audio=self.no_reflagging,
             # Room for the 4.5 GB disc, nowhere near the 42 GB of titles.
             free_space=lambda: 20 * 1024**3)
         runner.start()
@@ -387,7 +466,8 @@ class TestCancellation(RunnerTestCase):
         h = self.scripted()
         h.on_line = block_midway
         runner = BackupRunner(self.request(), h.emit, spawn=h.spawn,
-                              clock=h.clock, ejector=h.eject)
+                              clock=h.clock, ejector=h.eject,
+                              set_default_audio=self.no_reflagging)
         runner.start()
         self.assertTrue(started.wait(5), "the fake process never got going")
         runner.cancel()

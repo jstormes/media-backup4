@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
-from .. import events, mkv, model
+from .. import events, mkv, model, tracks
 from ..config import Config, free_bytes, room_for
 from . import command, inspect as layouts, isolation, messages, selection
 from .enumeration import DriveIndex, Resolution, parse_drives, resolve
@@ -180,6 +180,7 @@ class BackupRunner:
         policy: OutcomePolicy | None = None,
         drive_index: DriveIndex | None = None,
         free_space: Callable[[], int] | None = None,
+        set_default_audio: Callable[[Path], list] | None = None,
     ) -> None:
         self.request = request
         #: Shared by every job the manager starts, so a round of jobs runs
@@ -194,6 +195,10 @@ class BackupRunner:
         #: what a run does must not also be asserting how much room the
         #: machine running it happens to have.
         self._free_space = free_space or (lambda: free_bytes(request.cfg))
+        #: Injectable for the same reason: the default is a real mkvmerge and
+        #: mkvpropedit against a real file, and a test that asserts what a run
+        #: does must not depend on which tools the machine has.
+        self._set_default_audio = set_default_audio or tracks.apply_to
         self._policy = policy or OutcomePolicy(
             size_ratio_floor=request.cfg.size_ratio_floor,
             size_ratio_ceiling=request.cfg.size_ratio_ceiling)
@@ -634,6 +639,7 @@ class BackupRunner:
             if title is None:
                 continue
             title.output_file = name
+            self._flag_english_audio(self.request.dest / name, obs)
             measured = mkv.duration_seconds(self.request.dest / name)
             if measured is None:
                 obs.titles_unverified += 1
@@ -644,6 +650,32 @@ class BackupRunner:
                 logger.warning("job %s: %s runs %.0fs, disc says %ds",
                                self.request.job_id, name, measured,
                                title.seconds)
+
+    def _flag_english_audio(self, path, obs: BackupObservation) -> None:
+        """Make an English audio track the one that plays, if it is not already.
+
+        Every track stays in the file; this moves a flag. It is done here, on
+        the file just written, so the archive and everything downstream of it
+        see the finished article -- a publish step that hardlinks into a
+        staging area cannot edit the file without editing the archive through
+        the link, and the archive is read-only from there.
+
+        Never fails a disc. A header that could not be rewritten leaves the
+        wrong track playing first, which is an annoyance; the copy itself is
+        untouched and correct either way.
+        """
+        if not self.request.cfg.default_audio_english:
+            return
+        try:
+            changes = self._set_default_audio(path)
+        except Exception as exc:  # noqa: BLE001 -- see the docstring
+            logger.warning("job %s: could not set the default audio track on "
+                           "%s: %s", self.request.job_id, path.name, exc)
+            return
+        if changes:
+            obs.tracks_reflagged += 1
+            logger.info("job %s: %s now defaults to English audio",
+                        self.request.job_id, path.name)
 
     def _eject(self) -> None:
         if self._ejector is None:

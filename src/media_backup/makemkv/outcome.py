@@ -77,6 +77,11 @@ class BackupObservation:
     #: a verification either -- a run holding any of these does not get to
     #: report itself checked.
     titles_unverified: int = 0
+    #: Saved files whose default-audio flag was moved to an English track.
+    #: Not a fault and not a judgement about the copy -- it is a header edit
+    #: recorded so the report can say the archive was touched after MakeMKV
+    #: wrote it. See media_backup.tracks.
+    tracks_reflagged: int = 0
     #: What the scan said the chosen titles weigh. The yardstick for the
     #: output, in place of the disc's size -- an MKV run leaves out menus and
     #: unwanted tracks by design, so the disc size says nothing about it.
@@ -139,6 +144,7 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
         "files_written": obs.files_written,
         "titles_short": obs.titles_short,
         "titles_unverified": obs.titles_unverified,
+        "tracks_reflagged": obs.tracks_reflagged,
     }
 
     # 1. Our own doing. Checked first so a cancel is never reported as a disc

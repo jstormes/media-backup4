@@ -26,6 +26,54 @@ The last row is the one that settles it: MakeMKV's own shipped FLAC profile
 left the audio as AC3. Profiles are a GUI concept. An unknown profile name is
 not an error either — it succeeds silently, so a typo would never be noticed.
 
+## Do not filter by language. Flag instead.
+
+Measured 2026-09-12, and the most expensive way to learn it would have been in
+an archive. Speed Racer disc 1 (Mach GoGoGo), title 0, carries **Japanese audio
+only** -- a DTS-HD MA track and the DTS core inside it -- with English PGS
+subtitles. With
+
+```
+app_PreferredLanguage      = "eng"
+app_DefaultSelectionString = "-sel:all,+sel:video,+sel:(favlang|nolang|single),-sel:mvcvideo,=100:all,-10:favlang"
+```
+
+that title came out as **3.85 GB of video with no audio at all**, and
+makemkvcon reported success. Five streams offered, two written: the video and
+one English PGS track.
+
+The `single` clause was supposed to prevent exactly this. It did not, and the
+reason is worth keeping: `single` means *the only track of its kind*, and this
+title has two audio tracks, so neither qualified -- even though one is merely
+the core of the other. A disc with a single foreign audio track would have
+survived; this one did not.
+
+So **the archive keeps every track**, and what plays by default is set with a
+flag afterwards. `media_backup.tracks` moves the default-audio flag to an
+English track on every file the ripper writes, using `mkvpropedit --edit
+track:@N --set flag-default=1` -- a header edit, seconds per file whatever its
+size, and reversible. Nothing is removed, so a wrong guess costs a click rather
+than a re-rip.
+
+It is deliberately minimal:
+
+* an English audio track already flagged default is left alone, which on the
+  archive's discs is almost all of them -- 4 of 4 Superfriends titles and 16 of
+  16 Hustler titles needed no change;
+* otherwise the **first** English audio track gets the flag, in track order,
+  because the order is the authoring order and choosing by channel count would
+  promote Superfriends' later stereo remix over its original mono mix;
+* a title with no English audio is not touched. There is nothing to prefer, and
+  inventing a preference is what wrote silence above;
+* **subtitle and video flags are never touched.** MakeMKV flags an English
+  VobSub track default on the Superfriends DVD, so captions come up over
+  English dialogue there; whether that is wanted differs per disc and per
+  viewer, so it is left as the disc had it.
+
+`config.default_audio_english` turns the whole step off. `python3 -m
+media_backup.tracks FILE...` applies it to files already ripped, with
+`--dry-run`.
+
 ## The lever that does work
 
 `app_DefaultSelectionString` in **`~/.MakeMKV/settings.conf`**:
