@@ -71,20 +71,86 @@ a season of episodes.
 is a film; several similar-length titles with no shared backbone, across discs
 of one collection, is a series.
 
-## What it has to ask
+## What it can look up
 
-These are not derivable and must not be guessed:
+**imdb.com cannot be read by a program.** Measured 2026-09-11: CloudFront
+answers a non-browser user-agent with `403`, and a browser user-agent with a
+`202` carrying a zero-byte body. Any instruction to "check imdb.com" is
+unfollowable, and an agent told to do it will either stall or quietly invent
+an answer.
 
-* **The release year.** Jellyfin wants it and no MakeMKV attribute carries it.
-* **The canonical title**, where the disc's differs from the released one.
-* **Season and episode numbers** for a series. Playlist order is usually
-  broadcast order and is not reliably so.
+So the lookup happens against a **local mirror of IMDb's published datasets**,
+running as a container on the media server. It answers more than the web pages
+did: the release year, the canonical title with its punctuation, the provider
+id, the runtime, regional titles, and season and episode numbers.
+
+Row counts, 2026-09-11: `title_basics` 12.4M, `title_akas` 58.1M,
+`title_episode` 9.6M, `name_basics` 15.6M, `title_ratings` 1.7M.
+
+### What the environment must provide
+
+A machine that has not been set up will silently publish everything without
+provider tags, which looks like a style choice rather than a missing
+dependency. That is the failure worth designing against, so set these in
+`~/.profile` -- login scope, because the GUI is launched from the desktop and
+`~/.bashrc` only reaches interactive shells:
+
+```sh
+export MEDIA_BACKUP_IMDB_HOST=nas2
+export MEDIA_BACKUP_IMDB_USER=imdb
+export MEDIA_BACKUP_IMDB_PASSWORD=…
+```
+
+`MEDIA_BACKUP_IMDB_PORT` and `_DATABASE` default to 3306 and `imdb`.
+`media_backup.config` reads all five, the environment wins over
+`config.json`, and `Config.to_dict()` redacts the password.
+
+**The credentials are deliberately not in the repository.** This particular
+one guards a read-only mirror of public data on the LAN and is not a secret,
+but a project that keeps one password in source keeps the next one there too.
+`config.validate()` emits a warning -- not an error -- when a host is set with
+no user, so the operator is told lookups are off rather than discovering it
+from a library full of untagged films.
+
+Client packages: `mariadb-client` for a person at a terminal, `python3-pymysql`
+for code.
+
+## What it still has to ask
+
+These are not in any dataset and must not be guessed:
+
+* **Which candidate**, when a lookup returns several. It often does. A disc
+  label that has lost its punctuation needs a `LIKE`, and `'What%s Up%Doc%'`
+  matches four films -- 1972, 1978, 1985 and 1988 -- three of them wrong.
+  Bring the candidates with their years and runtimes; do not pick one.
 * **What an edition is called.** The data supports "the longer cut". "Unrated
   Extended Version" is in the disc's menu graphics, not in any field.
+* **Which film a box-set disc holds**, where the label names several or, as
+  with `FEBRUARY_2015_MULTI_FEATURES`, names none of them.
+* **Confirmation of an episode mapping** before it is written into filenames.
+  The database supplies the numbers and the per-episode runtimes; matching
+  them to *these* titles is inference and should be confirmed.
 
 Ask **once per collection**, not once per file. A box set is one conversation.
 
-A provider id may be looked up rather than asked, but see below.
+### Check the runtime against the rip
+
+`runtimeMinutes` against the file's measured duration is the check the web
+pages never made convenient, and it is what catches the right title of the
+wrong release -- a theatrical id on an extended cut, or a film mistaken for
+its remake.
+
+Agreement within a minute or two is confirmation. A ten-minute gap is a reason
+to stop and ask, not to publish.
+
+Worked, 2026-09-11: the `4 Movie Laugh Pack` (UPC 025192277740) arrives as
+four DVD titles across two discs whose labels name nothing and whose cell
+ranges are meaningless across titles. Nothing in the archive says which film
+is which. Measured durations of 108.8, 93.6, 102.3 and 89.7 minutes against
+`title_basics` gave Animal House, Weird Science, Dazed and Confused and Fast
+Times -- every one within 0.7 minutes, and the four runtimes far enough apart
+that no other assignment is possible. That disc is not identifiable any other
+way.
 
 ## Rules
 
@@ -95,6 +161,9 @@ is wrong, the fix belongs upstream.
 authoritative -- Jellyfin prefers local metadata over its own providers and
 offers no way to disable that -- so a wrong id is worse than no id. If a lookup
 is ambiguous, leave it out and let Jellyfin match on name and year, or ask.
+**If the lookup database is unreachable, publish without the tag and say so.**
+An unreachable database is a reason to omit an id, never a reason to recall
+one.
 
 **Publish only `done` discs.** A disc that reads `Needs you` is waiting on a
 person to rip it by hand; publishing what it did produce would file a fragment

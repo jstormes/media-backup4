@@ -204,3 +204,27 @@ compatibility list.
 `MEDIA_BACKUP_LOG` sets the level (default `INFO`); `MEDIA_BACKUP_LOG_FILE`
 redirects output to a file. Without `configure_logging()` in `main()`, the
 root logger's WARNING default silently discards every `logger.info` call.
+
+## Environment
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MEDIA_BACKUP_CONFIG` | repo root `config.json` | where the config file lives |
+| `MEDIA_BACKUP_LOG` | `INFO` | log level |
+| `MEDIA_BACKUP_LOG_FILE` | stderr | log destination |
+| `MEDIA_BACKUP_IMDB_HOST` | `nas2` | IMDb lookup database |
+| `MEDIA_BACKUP_IMDB_PORT` | `3306` | |
+| `MEDIA_BACKUP_IMDB_DATABASE` | `imdb` | |
+| `MEDIA_BACKUP_IMDB_USER` | *(unset)* | **required for provider-id lookups** |
+| `MEDIA_BACKUP_IMDB_PASSWORD` | *(unset)* | |
+
+The `IMDB_*` pair carries a credential and so is deliberately absent from
+`config.json` and from this repository; set it in `~/.profile`, which is login
+scope and therefore reaches the GUI launched from the desktop, where
+`~/.bashrc` would not. The environment wins over `config.json` for all five,
+and `Config.to_dict()` redacts the password.
+
+**A machine without them publishes films with no `[imdbid-…]` tag and no
+error**, which reads as a style choice rather than a missing dependency.
+`config.validate()` emits a warning for it; `docs/jellyfin/publishing.md`
+explains why the lookup cannot go to imdb.com instead.
