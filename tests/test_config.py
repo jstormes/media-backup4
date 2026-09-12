@@ -10,6 +10,80 @@ from unittest import mock
 from media_backup import config
 
 
+class TestImdbLookupSettings(unittest.TestCase):
+    """Credentials for the IMDb mirror come from the environment.
+
+    imdb.com cannot be read by a program -- CloudFront answers a non-browser
+    user-agent with 403 and a browser one with an empty 202, measured
+    2026-09-11 -- so publishing looks titles up in a local mirror instead.
+    """
+
+    def test_nothing_is_configured_by_default(self):
+        """A checkout carries no credential, so a fresh clone has none."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            cfg = config.load(Path("/nonexistent/config.json"))
+        self.assertEqual(cfg.imdb_user, "")
+        self.assertEqual(cfg.imdb_password, "")
+        self.assertFalse(cfg.imdb_configured)
+
+    def test_the_environment_supplies_them(self):
+        env = {"MEDIA_BACKUP_IMDB_USER": "imdb",
+               "MEDIA_BACKUP_IMDB_PASSWORD": "secret",
+               "MEDIA_BACKUP_IMDB_HOST": "nas2"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = config.load(Path("/nonexistent/config.json"))
+        self.assertEqual(cfg.imdb_user, "imdb")
+        self.assertEqual(cfg.imdb_password, "secret")
+        self.assertTrue(cfg.imdb_configured)
+
+    def test_the_environment_beats_the_config_file(self):
+        """A password set deliberately must not lose to a stale file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({"imdb_user": "from_file",
+                                        "imdb_host": "old-host"}))
+            with mock.patch.dict(os.environ,
+                                 {"MEDIA_BACKUP_IMDB_USER": "from_env"},
+                                 clear=True):
+                cfg = config.load(path)
+        self.assertEqual(cfg.imdb_user, "from_env")
+        self.assertEqual(cfg.imdb_host, "old-host", "unset vars leave the file alone")
+
+    def test_an_empty_variable_is_not_a_value(self):
+        """Exporting an empty string is how a variable gets unset in practice."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({"imdb_user": "from_file"}))
+            with mock.patch.dict(os.environ, {"MEDIA_BACKUP_IMDB_USER": ""},
+                                 clear=True):
+                cfg = config.load(path)
+        self.assertEqual(cfg.imdb_user, "from_file")
+
+    def test_an_unparseable_port_does_not_crash_startup(self):
+        """load() runs before the GUI can show anything, so it must not raise."""
+        with mock.patch.dict(os.environ, {"MEDIA_BACKUP_IMDB_PORT": "not-a-number"},
+                             clear=True):
+            cfg = config.load(Path("/nonexistent/config.json"))
+        self.assertEqual(cfg.imdb_port, 3306, "falls back to the default")
+
+    def test_the_password_is_redacted_from_a_dump(self):
+        """to_dict() feeds logging and display; nothing round-trips through it."""
+        cfg = config.Config(imdb_password="secret")
+        self.assertEqual(cfg.to_dict()["imdb_password"], "***")
+        self.assertEqual(cfg.imdb_password, "secret", "the real value still works")
+
+    def test_an_unset_password_redacts_to_empty_not_to_stars(self):
+        """A redacted marker for an unset password would read as
+        "one is configured", which is the opposite of the truth."""
+        self.assertEqual(config.Config().to_dict()["imdb_password"], "")
+
+    def test_a_host_without_a_user_is_a_warning_not_an_error(self):
+        cfg = config.Config(imdb_host="nas2", imdb_user="")
+        hits = [p for p in config.validate(cfg) if "IMDb" in p.text]
+        self.assertTrue(hits, "the operator should be told lookups are off")
+        self.assertFalse(any(p.is_fatal for p in hits), "publishing still works")
+
+
 class TestForensicsPath(unittest.TestCase):
     """Where captured disc navigation data is kept."""
 

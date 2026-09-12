@@ -22,6 +22,17 @@ from .makemkv import isolation
 ENV_VAR = "MEDIA_BACKUP_CONFIG"
 DEFAULT_FILENAME = "config.json"
 
+#: Settings that may be given in the environment, which wins over config.json.
+#: Credentials belong here rather than in a file that sits in a working tree
+#: and gets copied around.
+ENV_OVERRIDES = {
+    "MEDIA_BACKUP_IMDB_HOST": ("imdb_host", str),
+    "MEDIA_BACKUP_IMDB_PORT": ("imdb_port", int),
+    "MEDIA_BACKUP_IMDB_DATABASE": ("imdb_database", str),
+    "MEDIA_BACKUP_IMDB_USER": ("imdb_user", str),
+    "MEDIA_BACKUP_IMDB_PASSWORD": ("imdb_password", str),
+}
+
 ERROR = "error"
 WARNING = "warning"
 
@@ -102,6 +113,26 @@ class Config:
     keep_rejected_attempts: int = 1
     max_log_bytes: int = 50 * 1024**2
 
+    # -- IMDb lookup database ------------------------------------------------
+    #: A local mirror of IMDb's published datasets, used to turn a disc into
+    #: "Name (Year) [imdbid-tt...]" at publish time. It exists because
+    #: imdb.com cannot be read by a program any more: CloudFront answers a
+    #: non-browser user-agent with 403 and a browser one with an empty 202,
+    #: measured 2026-09-11. The database also answers things the web pages
+    #: never did -- runtimeMinutes to check a rip against, title_akas for
+    #: regional titles, title_episode for season and episode numbers.
+    #:
+    #: The credentials come from the environment
+    #: (MEDIA_BACKUP_IMDB_USER / _PASSWORD), not from config.json, so a
+    #: working tree carries no password at all. This one guards a read-only
+    #: mirror of public data on the LAN and is not a secret, but a project
+    #: that keeps one password in source will keep the next one there too.
+    imdb_host: str = "nas2"
+    imdb_port: int = 3306
+    imdb_database: str = "imdb"
+    imdb_user: str = ""
+    imdb_password: str = ""
+
     # -- derived ------------------------------------------------------------
 
     @property
@@ -117,6 +148,11 @@ class Config:
         return self.cancelled_path or (self.media_path / "cancelled")
 
     @property
+    def imdb_configured(self) -> bool:
+        """True when a lookup could be attempted. Says nothing about reachability."""
+        return bool(self.imdb_host and self.imdb_user)
+
+    @property
     def forensics_dir(self) -> Path:
         return self.forensics_path or (self.media_path / "forensics")
 
@@ -124,10 +160,19 @@ class Config:
     def lock_path(self) -> Path:
         return self.media_path / ".media-backup.lock"
 
+    #: Fields whose value must never appear in a dump. to_dict() feeds
+    #: logging and display, and nothing round-trips through it, so redacting
+    #: costs nothing and stops a credential reaching a log file or a
+    #: collection.json somebody later pastes into an issue.
+    SECRET_FIELDS = ("imdb_password",)
+
     def to_dict(self) -> dict:
         out = {}
         for f in fields(self):
             value = getattr(self, f.name)
+            if f.name in self.SECRET_FIELDS:
+                out[f.name] = "***" if value else ""
+                continue
             out[f.name] = str(value) if isinstance(value, Path) else value
         return out
 
@@ -166,6 +211,19 @@ def load(path: Path | None = None) -> Config:
             kwargs[name] = Path(value)
         else:
             kwargs[name] = value
+
+    # The environment wins. A password put here deliberately should not be
+    # silently overridden by a stale value in a config file.
+    for env_name, (field_name, cast) in ENV_OVERRIDES.items():
+        raw = os.environ.get(env_name)
+        if raw is None or raw == "":
+            continue
+        try:
+            kwargs[field_name] = cast(raw)
+        except ValueError:
+            # A bad value is reported by validate(), not raised here: load()
+            # is called at startup and must not traceback.
+            pass
     return Config(**kwargs)
 
 
@@ -186,6 +244,12 @@ def validate(cfg: Config) -> list[Problem]:
 
     if not os.access(cfg.media_path, os.W_OK):
         problems.append(Problem(ERROR, f"media_path is not writable: {cfg.media_path}"))
+
+    if cfg.imdb_host and not cfg.imdb_user:
+        problems.append(Problem(WARNING,
+            "no IMDb lookup user is set, so publishing cannot confirm a title "
+            "against the database. Set MEDIA_BACKUP_IMDB_USER and "
+            "MEDIA_BACKUP_IMDB_PASSWORD; see docs/jellyfin/publishing.md."))
 
     # The whole finish-by-rename design rests on this being one filesystem.
     for name, target in (("finished_path", cfg.finished_dir),

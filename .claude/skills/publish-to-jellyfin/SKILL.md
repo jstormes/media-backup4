@@ -142,26 +142,39 @@ Read the shape of what is left:
 use them rather than eyeballing durations, and remember they are only
 meaningful on a Blu-ray.
 
-**Episode order is not in the data.** MakeMKV's title order usually follows
+**Episode order is not in MakeMKV's data.** Its title order usually follows
 disc order, which usually follows broadcast order, and "usually" is not good
-enough to number episodes by. Ask, or match runtimes against a published
-episode list.
+enough to number episodes by. The published episode list you need is on nas2 --
+`title_episode`, 9.6M rows, with per-episode runtimes to align against. See
+step 6. Confirm the mapping with the operator before writing the filenames.
 
-## 4. Ask for what the disc cannot say
+## 4. Look up what you can; ask for the rest
 
-Ask **once per collection**, in one message, and only for what is missing:
+**Try the IMDb database on nas2 first** -- step 6 has the queries. It answers
+the release year, the canonical title with its punctuation, the provider id,
+the runtime to check the rip against, and season and episode numbers. Asking
+for something the database already knows wastes the operator's attention and
+invites a typo into a filename.
 
-- **Release year.** Jellyfin wants it; no MakeMKV attribute carries it.
-- **Canonical title**, where the disc's differs. Disc names are often
-  upper-case volume labels: `WHAT'S UP DOC?` is released as `What's Up, Doc?`.
-- **What each cut is called** — "Theatrical Cut", "Unrated Extended Cut". The
-  data supports "the longer one" and no more.
-- **Season and episode numbers**, for a series.
+What it cannot answer, and you must still ask **once per collection, in one
+message**:
 
-A provider id may be looked up instead of asked. Use it only when the lookup
-is unambiguous: an `[imdbid-…]` tag or an NFO `uniqueid` overrides Jellyfin's
-own providers and cannot be turned off, so a wrong id is worse than none.
-Where the lookup is ambiguous, leave it out and let name and year match.
+- **Which candidate**, when the lookup returns several. It usually does: a
+  `LIKE` on a disc label that has lost its punctuation returned four films for
+  `WHAT'S UP DOC?`. Bring the candidates with their years and runtimes rather
+  than guessing between them.
+- **What each cut is called** — "Theatrical Cut", "Unrated Extended Cut". Not
+  in IMDb's datasets, and the disc data supports "the longer one" and no more.
+- **Which film a box set disc holds**, where the label names several.
+- **Confirmation of an episode mapping** before it is written into filenames.
+  The database supplies the numbers; matching them to *these* titles is done
+  by runtime and should be confirmed, not assumed.
+
+A provider id may be looked up rather than asked, and now should be. Use it
+only when the lookup is unambiguous: an `[imdbid-…]` tag or an NFO `uniqueid`
+overrides Jellyfin's own providers and cannot be turned off, so a wrong id is
+worse than none. Where it is ambiguous, leave it out and let name and year
+match.
 
 ## 5. Build the tree
 
@@ -221,10 +234,94 @@ a second metadata mechanism into a library that consistently uses one. See
 
 **Look the id up, never recall it.** A malformed or wrong tag is silently
 ignored or silently authoritative -- neither looks like an error, both look
-like Jellyfin matching badly. Confirm against imdb.com before writing, and if
-the lookup is at all ambiguous leave the tag off entirely and let name and
-year match. The library already carries three tags that fail this way:
-`[indbid-…]`, `[imbdid-…]`, and one missing the `imdbid-` prefix.
+like Jellyfin matching badly. If the lookup is at all ambiguous leave the tag
+off entirely and let name and year match. The library already carries three
+tags that fail this way: `[indbid-…]`, `[imbdid-…]`, and one missing the
+`imdbid-` prefix.
+
+### Look it up in the database on nas2, not on imdb.com
+
+**imdb.com cannot be read by a program.** Measured 2026-09-11: CloudFront
+answers a non-browser user-agent with `403`, and a browser user-agent with a
+`202` carrying a zero-byte body. There is no useful response either way, so
+any instruction to "check imdb.com" is unfollowable.
+
+nas2 runs a MariaDB mirror of IMDb's published datasets instead -- and it is
+better than the web pages were, because it carries runtimes and episode
+numbers the pages never exposed cleanly.
+
+```bash
+mariadb -h "$MEDIA_BACKUP_IMDB_HOST" -u "$MEDIA_BACKUP_IMDB_USER" \
+        -p"$MEDIA_BACKUP_IMDB_PASSWORD" imdb -t -e "..."
+```
+
+Credentials come from the environment (`~/.profile`), never from
+`config.json` or this file; `media_backup.config` exposes them as
+`cfg.imdb_host` / `_user` / `_password` and redacts the password from
+`to_dict()`. `python3-pymysql` is installed for code that needs it.
+
+Row counts as of 2026-09-11: `title_basics` 12.4M, `title_akas` 58.1M,
+`title_episode` 9.6M, `name_basics` 15.6M, `title_ratings` 1.7M.
+
+**The ordinary lookup.** Constrain `titleType` -- `movie` and `tvMovie` are
+different things and a disc is usually one of them:
+
+```sql
+SELECT tconst, titleType, primaryTitle, startYear, runtimeMinutes
+FROM title_basics
+WHERE primaryTitle = 'Annie''s Point' AND titleType IN ('movie','tvMovie')
+ORDER BY startYear;
+```
+
+**It narrows; it does not decide.** The disc label drops punctuation, so a
+`LIKE` is often needed, and a `LIKE` returns a field. Verified 2026-09-11:
+
+```sql
+WHERE primaryTitle LIKE 'What%s Up%Doc%' AND titleType = 'movie'
+```
+
+returns **four** films -- `What's Up, Doc?` (1972), `What's Up Superdoc!`
+(1978), `What's Up Doc?` (1985) and `What's Up Doc` (1988). Three are the
+wrong film. Use the year and the runtime to choose, and where they do not
+settle it, ask. A confident wrong `tconst` is worse than no tag.
+
+**Check the runtime against the rip.** This is the cross-check the web never
+made easy, and it catches the right title of the wrong release:
+
+```bash
+ffprobe -v error -show_entries format=duration -of csv=p=0 "$file"
+```
+
+Annie's Point: `runtimeMinutes` 87 against a measured 1:27:09. Agreement to a
+minute or two is confirmation; a ten-minute gap means a different cut or a
+different release, and is a reason to stop and ask rather than to publish.
+
+**Regional titles** are in `title_akas`, which is what settles a disc whose
+label is a local variant:
+
+```sql
+SELECT a.title, a.region, a.types FROM title_akas a
+WHERE a.titleId = 'tt0069495' AND a.region IN ('US','GB');
+```
+
+**Episode numbers are in the database.** Step 3 says episode order is not in
+the data and must be asked for. That was true of MakeMKV's output and is not
+true here:
+
+```sql
+SELECT b.tconst, e.seasonNumber, e.episodeNumber, b.primaryTitle, b.runtimeMinutes
+FROM title_episode e JOIN title_basics b ON b.tconst = e.tconst
+WHERE e.parentTconst = 'tt0098769' AND e.seasonNumber = 1
+ORDER BY e.episodeNumber;
+```
+
+Match the disc's titles to that list **by runtime**, and confirm the mapping
+with the operator before writing `S01E01.mkv` names. MakeMKV's title order
+still proves nothing, so the database supplies the numbering and the runtimes
+supply the alignment -- neither alone is enough.
+
+**If the database is unreachable**, say so and publish without the tag rather
+than guessing one. Name and year still match in Jellyfin; a wrong id does not.
 
 ## 7. Push it to the media server
 
@@ -457,6 +554,15 @@ And the two from 2026-09-07 that this skill was first run against:
 |---|---|---|
 | `Match Point`, UPC 678149486629 | `B1_t00.mkv` 2:04:12 | `Movies/Match Point (2005) [imdbid-tt0416320]/…` |
 | `DVD_VIDEO`, UPC 043396100589 | `Fresh Horses-A1_t00.mkv` 1:42:39 | `Movies/Fresh Horses (1988) [imdbid-tt0095178]/…` |
+| `ANNIES_POINT`, UPC 883476030029 | `B1_t00.mkv` 1:27:09 | `Movies/Annie's Point (2005) [imdbid-tt0441733]/…` |
+
+The third was published 2026-09-11 and is the first done against the database.
+Both the collection title (`Annies Point`) and the disc label (`ANNIES_POINT`)
+drop the apostrophe the release has; `title_basics` gave `Annie's Point`,
+`tvMovie`, 2005, `tt0441733`, and `runtimeMinutes` 87 against a measured
+1:27:09. Its filename contains an apostrophe, which is the character that
+previously produced a false MISMATCH in step 9 -- `printf '%q'` carried it
+through cleanly.
 
 Note the second: the volume label is the generic `DVD_VIDEO` and the film is
 `Fresh Horses`. Always take the name from `makemkv_disc_name`, never from the
