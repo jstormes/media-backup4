@@ -26,6 +26,22 @@ class TestRoundTrip(unittest.TestCase):
         c.discs = [d]
         self.assertEqual(Collection.from_dict(c.to_dict()).to_dict(), c.to_dict())
 
+    def test_what_the_collection_holds_survives_a_reload(self):
+        """The operator is asked once; the answer has to outlive the session.
+
+        It is unrecoverable afterwards -- nothing in the files says whether
+        twelve 21-minute titles are a season or a disc of shorts.
+        """
+        c = Collection(identifier="x", title="Challenge of the Super Friends")
+        c.kind = model.KIND_SERIES
+        self.assertEqual(Collection.from_dict(c.to_dict()).kind,
+                         model.KIND_SERIES)
+
+    def test_a_collection_saved_before_the_field_existed_reads_as_not_sure(self):
+        c = Collection.from_dict({"identifier": "older-than-the-field"})
+        self.assertEqual(c.kind, model.KIND_UNKNOWN)
+        self.assertIn(c.kind, model.KINDS)
+
     def test_unknown_fields_from_a_future_version_are_ignored(self):
         data = Collection(identifier="x").to_dict()
         data["invented_later"] = {"a": 1}

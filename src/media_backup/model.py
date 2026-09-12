@@ -40,6 +40,52 @@ OPEN = "open"
 FINISHED = "finished"
 CANCELLED = "cancelled"
 
+# -- what a collection holds ------------------------------------------------
+#
+# A scan cannot tell a season of episodes from a film and its extras. Both are
+# "several titles, one of them longest", and on a DVD the clip lists cannot
+# settle it either. The operator can tell at a glance from the case in their
+# hand, so they are asked once per collection and the answer steers the
+# publish-time filters.
+#
+# UNKNOWN is the honest default: the filters then fall back to what the clip
+# lists alone support, which is what they did before this field existed.
+
+KIND_UNKNOWN = ""
+#: One film. Optionally several cuts of it, optionally extras, and sometimes
+#: something that is not a film at all -- the Blade set carries a television
+#: pilot beside the features. The longest title is the work; slices of it are
+#: fragments.
+KIND_MOVIE = "movie"
+#: Several films in one package -- a double bill, a four-film pack. Each
+#: feature-length title is its own work, so "the longest is the feature" is
+#: exactly wrong here, and extras and stray television episodes may sit
+#: alongside them.
+KIND_MOVIES = "movies"
+#: A themed set of one-off programmes rather than a numbered run: the
+#: Scooby-Doo holiday collection. Episode-length titles that are content, but
+#: with no season or episode numbers to carry.
+KIND_SPECIAL = "special"
+#: A numbered run of episodes -- Challenge of the Super Friends, Speed Racer.
+#: Many titles of near-identical length, all of them content, usually beside a
+#: "play all" that must be dropped in favour of its parts. A short count here
+#: is a missing episode, not a quiet success.
+KIND_SERIES = "series"
+
+KINDS = (KIND_UNKNOWN, KIND_MOVIE, KIND_MOVIES, KIND_SPECIAL, KIND_SERIES)
+
+#: The kinds whose titles are episodes rather than features: equal runtimes are
+#: expected, a "play all" is normal, and every episode-length title is content.
+EPISODIC_KINDS = (KIND_SPECIAL, KIND_SERIES)
+
+KIND_LABELS = {
+    KIND_UNKNOWN: "Not sure",
+    KIND_MOVIE: "Movie",
+    KIND_MOVIES: "Collection of movies",
+    KIND_SPECIAL: "Special",
+    KIND_SERIES: "Show series",
+}
+
 # -- failure kinds ----------------------------------------------------------
 
 ERR_CANCELLED = "cancelled"
@@ -256,6 +302,11 @@ class Collection:
     #: Optional declared size of the set. The only guard against filing an
     #: incomplete box set, an error otherwise invisible for years.
     expected_disc_count: int | None = None
+    #: One of KINDS, or "" when the operator did not say. Steers the
+    #: publish-time filters: a season's "play all" must be dropped in favour
+    #: of its episodes, while a film's slices must be dropped in favour of the
+    #: feature, and those two look alike from the clip lists alone.
+    kind: str = KIND_UNKNOWN
     state: str = OPEN
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)
