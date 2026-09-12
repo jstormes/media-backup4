@@ -289,6 +289,30 @@ class NewCollectionDialog(simpledialog.Dialog):
         ttk.Label(master, foreground=COLOUR_DETAIL,
                   text="Optional. The only guard against filing an incomplete "
                        "box set.").grid(row=3, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(master, text="This is a").grid(row=4, column=0, sticky="w",
+                                                 pady=(8, 2))
+        self._kind = tk.StringVar(value=model.KIND_UNKNOWN)
+        kinds = ttk.Frame(master)
+        kinds.grid(row=4, column=1, sticky="w", pady=(8, 2))
+        for value, hint in (
+                (model.KIND_UNKNOWN, "fall back to what the clip lists show"),
+                (model.KIND_MOVIE, "one film, any cuts and extras"),
+                (model.KIND_MOVIES, "several films in one package"),
+                (model.KIND_SPECIAL, "one-off programmes, no episode numbers"),
+                (model.KIND_SERIES, "a numbered run of episodes")):
+            row = ttk.Frame(kinds)
+            row.pack(anchor="w")
+            ttk.Radiobutton(row, text=model.KIND_LABELS[value], value=value,
+                            variable=self._kind).pack(side="left")
+            ttk.Label(row, text=f"\u2014 {hint}",
+                      foreground=COLOUR_DETAIL).pack(side="left", padx=(4, 0))
+        ttk.Label(master, foreground=COLOUR_DETAIL, justify="left",
+                  text="A scan cannot tell a season from a film and its "
+                       "extras.\nSaying which decides what gets dropped: a "
+                       "season's\n\u201cplay all\u201d, or a film's "
+                       "individual scenes.").grid(row=5, column=0, columnspan=2,
+                                                   sticky="w")
         return self._title
 
     def validate(self) -> bool:
@@ -304,7 +328,8 @@ class NewCollectionDialog(simpledialog.Dialog):
         count = self._count.get().strip()
         self.result = (self._title.get().strip(),
                        self._identifier.get().strip(),
-                       int(count) if count else None)
+                       int(count) if count else None,
+                       self._kind.get())
 
 
 # ---------------------------------------------------------------------------
@@ -772,11 +797,13 @@ class MainWindow:
             self.create_collection(*answer)
 
     def create_collection(self, title: str = "", identifier: str = "",
-                          expected: int | None = None) -> model.Collection | None:
+                          expected: int | None = None,
+                          kind: str = model.KIND_UNKNOWN) -> model.Collection | None:
         try:
             collection = self.store.create(identifier=identifier)
             collection.title = title
             collection.expected_disc_count = expected
+            collection.kind = kind if kind in model.KINDS else model.KIND_UNKNOWN
             self.store.save(collection)
         except StoreError as exc:
             self._error("Could not create the collection", str(exc))

@@ -305,6 +305,14 @@ notes, `expected_disc_count`, state, timestamps, schema version, app version,
 set**, an error otherwise invisible for years. When set, a collection is
 complete only when that many discs are good.
 
+**`kind`** — what the operator says the collection holds: `movie` (one film,
+optional alternate cuts, extras, and the occasional stray TV pilot a film disc
+carries), `movies` (several films in one package), `special` (one-off
+programmes with no episode numbers), `series` (a numbered run), or empty for
+"not sure". It changes nothing about what is copied; it is recorded here
+because the disc does not say and a person does, and §9.1 is where it earns
+its place.
+
 ---
 
 ## 5. State machines
@@ -508,6 +516,42 @@ which is recoverable, against silently dropping a film, which is not.**
   sides is what stops a DVD's `{1..12}` inside `{1..15}` scoring 1.0 and
   reporting two different films as two cuts of one (§17.2).
 
+### 9.1 Publish-time classification
+
+A separate question from §9's, asked later and by a different reader: given
+that everything was copied, **what is each title?** The vocabulary is
+`content`, `play_all`, `fragment`, `duplicate`, `degenerate`, and it decides
+only what the publish step stages and what it reports as deliberately left
+behind. Nothing here deletes anything.
+
+Two inputs beyond the scan:
+
+1. **Whether clip lists can be compared**, which is the media type and nothing
+   cleverer — `disc.media.startswith("optical_bd")`. §16.3. A Blu-ray's clip
+   ids are global and a DVD's cell range is local to its own title. Where they
+   cannot be compared, **no title is called a fragment** (a DVD does not offer
+   slices of the feature as titles, and inferring it from a range every title
+   spells the same way dropped seven episodes), and a duplicate needs the same
+   runtime *and the same declared size to the byte*.
+2. **The collection's `kind`.** For `series` and `special` a play-all is
+   expected, and is recognised from runtime as well as from clips: its length
+   is the sum of two or more near-equal siblings', exactly. For `movie` the
+   longest title is the film and is never demoted to a play-all, though
+   shorter play-alls — a disc's "play all extras" — are still found. For
+   `movies` and for an unset kind, neither adjustment applies.
+
+**The runtime rule is gated on the kind deliberately.** Subset-sum over a pile
+of extras will find a combination that adds up to the feature on most discs,
+so it is applied only where the operator has said the disc holds episodes, and
+only to parts that are near-equal in length.
+
+The failure this exists to prevent, measured 2026-09-12: Challenge of the
+Superfriends disc 2 side A carries a 2:32:04 play-all and the seven 21-minute
+episodes it is made of. Every episode's cell range is `1`, a subset of the
+play-all's `1,2,3,4,5,6,7`, which is the textbook fragment shape — on a
+Blu-ray. Published on that reading, the box set gained one 2.5-hour file and
+lost seven episodes, and the report said so in a way nobody read.
+
 ---
 
 ## 10. Judging a run
@@ -607,6 +651,11 @@ The UI is not specified. What it must make possible is:
 
 - See every drive, what is in it, and whether it is busy.
 - Create a collection, add the disc in a drive, start it.
+- **Say what the collection holds** — §4's `kind` — when creating it, with
+  "not sure" available and the default. It is the one judgement a person makes
+  better than the scan and it cannot be recovered later from the files; §9.1
+  spends it. Offer it as a choice between named things ("Movie", "Collection of
+  movies", "Special", "Show series"), not as free text.
 - See per-job state, progress and the current step.
 - See **why** a disc failed, in words that name the next action.
 - Retry a failed disc; abandon one; cancel a running one.
@@ -647,6 +696,9 @@ rather than convenience:
   so an empty `data/` reads as a finished job rather than a lost one.
 - **Report every title left behind, with the reason.** A reader must be able
   to tell from the report alone that nothing was lost.
+- **Classify with the collection's `kind` and the disc's media type**, per
+  §9.1. Both are in `collection.json`; neither is guessable from the scan, and
+  getting either wrong drops content rather than adding it.
 
 ---
 
@@ -680,6 +732,12 @@ had:
 | Season disc, 8 similar-length titles | all 8 saved |
 | Blu-ray with the feature authored twice | both saved (dedup is publish's job) |
 | Cell range `{1..12}` inside `{1..15}` | `separate_works`, **not** `cut_variants` |
+| DVD play-all, 7 episodes all reporting cell `1` | play-all dropped, 7 episodes published (`kind=series`) |
+| Two DVD episodes of equal runtime, sizes differing | both published |
+| One DVD episode authored twice, sizes identical | published once, the richer stream set |
+| DVD featurette `1,2,3,4,5,6,7` beside feature `1-31` | both published; neither is a fragment |
+| Film offered whole and as two halves (`kind=movie`) | film published, halves are fragments |
+| "Play all extras" shorter than the feature | play-all dropped, featurettes published |
 | Blu-ray title correct but 84% of reported size | `success`, not failure |
 | A copy that stopped at 20% of duration | `failure` |
 | A file that will not report duration | `success_unverified`, never `success` |
@@ -746,10 +804,20 @@ double feature reports `1-12` for *both* films.
 Any cross-title conclusion from a DVD segments map is nonsense. It cost a
 film (§17.1).
 
-To tell the spellings apart: if every title on the disc expands to exactly
-`{1..N}`, the ids are title-local; one title that does not is enough to say
-they are global. Verified against all 21 scans — every DVD reads local, every
-Blu-ray global.
+To tell the spellings apart, **use the media type the disc record already
+carries** — `optical_dvd` against `optical_bd`/`optical_bd_r`. There is no
+reason to infer what is recorded.
+
+The heuristic, for a reader who has titles and no disc: if every title expands
+to exactly `{1..N}` the ids are title-local; one title that does not is enough
+to say they are global. It was verified against all 21 scans here in 2026-09-08
+and **it has since been measured wrong.** Re-run 2026-09-12 across the 161
+discs in the archive that record a media type, it agrees with 160: Giant's
+second side is a DVD whose feature reports `31-40,41-56`, a cell range that
+does not begin at 1, and the guess calls the disc global. A second test helps
+and does not close the gap — one clip list appearing on titles of *different*
+runtimes cannot be naming the same content, which catches a DVD of episodes
+that all report `1`. Neither is a substitute for the recorded media type.
 
 ### 16.4 Playlist obfuscation is structural and visible (2026-09-07)
 

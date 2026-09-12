@@ -84,32 +84,96 @@ the operator can see what was decided rather than discovering it later.
 
 ### Telling the pile apart
 
-The clip lists do most of the work, and `media_backup.makemkv.selection` has
-the helpers. **On a Blu-ray the segments map names global clip files and can
-be compared across titles. On a DVD it is a cell range local to its own title
-and comparing it across titles is meaningless** -- every DVD title's range
-starts at 1, so two unrelated films both report `1-12`. Never conclude
-anything from two DVD titles sharing a range.
+**Ask the code first.** `media_backup.makemkv.selection.classify()` returns one
+verdict per title -- `content`, `play_all`, `fragment`, `duplicate`,
+`degenerate` -- and it is the reasoning below, already written and tested
+against the discs that taught it. Read its verdicts, then sanity-check them
+against the disc; do not re-derive them by eye.
 
-For a Blu-ray, in order:
+```python
+from media_backup import model
+from media_backup.makemkv import selection
 
-1. **Duplicates.** Same clip list *and* same duration is the same content
-   authored twice. Keep the one with the higher `streams` -- the copies are
-   not interchangeable, Hancock's pair carry fifteen subtitle tracks against
-   seven -- and say in the report that you did.
-2. **Fragments.** A title whose clip set is a strict subset of a longer kept
-   title's is a slice of it. Drop it. This is what takes 28 GB off Hancock.
-3. **Cuts or separate works.** `relationship()` on what remains. It requires
+verdict = selection.classify(
+    titles,                                          # model.Title per titles[]
+    collection.get("kind", model.KIND_UNKNOWN),      # what the operator said
+    clips_global=disc["media"].startswith("optical_bd"),
+)
+```
+
+**Both extra arguments matter, and omitting either loses content rather than
+adding it.**
+
+`clips_global` is whether a clip list means the same thing in two titles. On a
+Blu-ray the segments map names global clip files in `BDMV/STREAM`; on a DVD it
+is a cell range **local to its own title**, every DVD title's starts at 1, and
+two unrelated films both report `1-12`. It is `disc["media"]` -- a recorded
+fact -- so never infer it: the heuristic that reads it off the titles is wrong
+on one disc in 161 (Giant's second side, a DVD whose feature reports
+`31-40,41-56`).
+
+`kind` is the operator's answer to what the collection holds, set when the
+collection was created: `movie`, `movies`, `special`, `series`, or empty.
+
+What the verdicts then mean, in the order they are decided:
+
+1. **Degenerate.** One clip played over and over -- Speed Racer's 989-minute
+   playlist of 901 identical play-items. Junk, and its declared size poisons
+   any total.
+2. **Duplicates**, before anything else, because a stray second copy breaks
+   the play-all test below. Where clip lists are comparable it is the same
+   clip list *and* the same duration. Where they are not, it is the same
+   duration **and the same declared size to the byte** -- Challenge of the
+   Superfriends has two 21:43 episodes differing by 233 KB, which are two
+   episodes, and two 21:37 titles of 1,006,301,184 bytes each, which are one
+   episode with and without a commentary track. Runtime alone cannot tell
+   those apart, and guessing costs an episode. Keep the copy with the higher
+   `streams` -- Hancock's pair carry 23 against 15 -- and say so in the report.
+3. **Play-alls.** A title that is two or more siblings joined. Recognised two
+   ways: disjoint clip lists that cover it exactly, and -- for `series` and
+   `special` only -- a runtime that is the sum of two or more near-equal
+   siblings' runtimes, exactly (Superfriends side A: 2:32:04 = 1303 + 1303 +
+   1299 + 1304 + 1302 + 1309 + 1304). Publish the parts, not the parent.
+   For `kind=movie` the longest title is never called a play-all, because a
+   film offered whole and as two halves is that shape; shorter play-alls are
+   still found, and Mrs. Doubtfire's Blu-ray has a real one covering seven
+   featurettes.
+4. **Fragments.** A title whose clip set is a strict subset of a longer kept
+   title's is a slice of it. Drop it -- 28 GB off Hancock. **Only where clip
+   lists are comparable.** On a DVD nothing is a fragment: a disc does not
+   offer slices of its feature as titles, and inferring it from a cell range
+   every title spells the same way dropped seven Superfriends episodes in
+   favour of one 2.5-hour file.
+5. **Cuts or separate works.** `relationship()` on what remains. It requires
    each cut to carry clips the other lacks, which is what seamless branching
    is, so a subset relationship reads as separate works rather than cuts.
 
-For a DVD none of that is available, so use duration, chapter count and the
-disc label, and ask. The label is often the giveaway:
-`FIREHEAD_AND_LAST_LIVES` names both films on the disc, and the two
-feature-length titles are them.
+On a DVD, steps 3-5 leave you with duration, chapter count and the disc label,
+and asking. The label is often the giveaway: `FIREHEAD_AND_LAST_LIVES` names
+both films on the disc, and the two feature-length titles are them.
 
 **Two feature-length titles on a DVD are usually two films, not two cuts.**
-That is the case the old ripper got wrong twice.
+That is the case the old ripper got wrong twice. But check the aspect ratio
+first -- `ffprobe -v error -show_entries stream=display_aspect_ratio` -- because
+they are also how a disc carries one film twice: Monster-in-Law's 1:40:56 is
+16:9 and its 1:41:01 is 4:3, one film in two shapes.
+
+**Check every feature against the clock before staging it.** Measured duration
+within a hair of declared, per file:
+
+```bash
+ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f"
+```
+
+The Hustler's Blu-ray, 2026-09-12: the drive dropped the disc mid-read
+(`NOT READY:MEDIUM NOT PRESENT - TRAY OPEN`), title 4 -- the film -- was never
+written, and the disc still reads `done` with `output_file` empty for that one
+title. Staged blind, that publishes 16 GB of extras and no film. A title whose
+`output_file` is empty or missing from `data/` is a **stop**, not a skip.
+Mrs. Doubtfire shows the other side of the same check: two of its extras
+measure 3m against a declared 8:20, with zero read errors -- 100-chapter still
+galleries whose declared length is fiction. Short *extras* with no read errors
+are a naming question; a short *feature* is a re-rip.
 
 Backups made before 2026-09-07 can hold surplus copies: compare the claimed
 file against any unclaimed one of the same runtime with
@@ -120,8 +184,10 @@ better equipped. Stage the richer one and say in the report that you did.
 ## 3. Work out what the disc holds
 
 After step 2 has thrown out the duplicates and the fragments, what remains is
-content. The longest title is *usually* the feature, and that is a starting
-point rather than a rule — a disc can hold two films, a season of episodes,
+content. **`kind` has already told you the shape** -- `movie` means one film
+with extras, `movies` means several, `series` and `special` mean episodes -- so
+read it before reasoning from runtimes. Where it is empty, the longest title is
+*usually* the feature, and that is a starting point rather than a rule — a disc can hold two films, a season of episodes,
 or a dozen twenty-minute shorts, and on those discs "the longest" means
 nothing.
 

@@ -43,13 +43,16 @@ matter here:
 |---|---|
 | `title`, `identifier` | What the operator called the set, and the barcode off the case. `identifier` names the *physical release*, not the work. |
 | `expected_disc_count` | What the set was declared to hold. A guard against publishing an incomplete box set. |
+| `kind` | What the operator says it holds: `movie`, `movies`, `special`, `series`, or empty for "not sure". Pass it to `selection.classify()`; it decides whether a play-all is expected and whether equal runtimes are normal. |
 | `discs[]` | One entry per physical disc, in `ordinal` order. |
 | `discs[].makemkv_disc_name` | MakeMKV's name for the disc -- "Fresh Horses" where the volume label says `DVD_VIDEO`. The best name available. |
 | `discs[].state` | Only `done` was backed up. `failed`, `abandoned` and anything else must not be published. |
+| `discs[].media` | `optical_dvd`, `optical_bd` or `optical_bd_r`. **This is what says whether clip lists mean anything across titles** -- pass `media.startswith("optical_bd")` as `classify`'s `clips_global`. Do not infer it from the clip lists; measured wrong on one disc in 161. |
 | `discs[].titles[]` | The titles the scan found, feature and extras alike. |
 | `titles[].output_file` | **The file on disk**, reconciled after the run. This is the link from metadata to bytes; do not reconstruct it from the title index. |
 | `titles[].duration`, `size_bytes`, `chapters` | For telling a feature from an extra, and the longer cut from the shorter. |
-| `titles[].segments` | The clip list. Titles sharing a backbone are cuts of one work; see `makemkv/selection.py`. |
+| `titles[].segments` | The clip list. On a Blu-ray, global clip ids, comparable across titles. On a DVD, **a cell range local to this title** -- every DVD title's starts at 1 and comparing two of them concludes nothing. See `makemkv/selection.py`. |
+| `titles[].streams` | How many streams the scan found. What tells the richer authoring from the poorer when two titles are the same content. |
 | `discs[].attempts[]` | Evidence. `error_kind` says why something is not `done`. |
 
 Media files are at
@@ -57,9 +60,24 @@ Media files are at
 
 ## What it has to decide
 
-**Which titles are the work and which are extras.** The longest is the
-feature; the rest are extras and belong in a `behind the scenes` or `extras`
-subfolder, not loose beside it.
+**Start from `selection.classify(titles, kind, clips_global=...)`.** It returns
+one of `content`, `play_all`, `fragment`, `duplicate`, `degenerate` per title,
+and it is the same clip-list reasoning described below rather than a second
+opinion about it. What is left as `content` is what there is to name. Anything
+else is reported as deliberately left in the archive, by title and reason.
+
+Feed it both extra inputs or it will be wrong in the direction that loses
+content: the collection's `kind`, and `clips_global=disc.media.startswith(
+"optical_bd")`. On a DVD it then calls nothing a fragment, and requires an
+identical declared size before calling two equal-length titles the same
+content -- Challenge of the Superfriends has two 21:43 episodes that differ by
+233 KB and two 21:37 titles that are byte-identical, one of them a commentary
+version. Runtime alone cannot tell those pairs apart.
+
+**Which titles are the work and which are extras.** The longest is *usually*
+the feature; the rest are extras and belong in an `extras` subfolder, not
+loose beside it. On a disc of episodes "the longest" is the play-all and
+means nothing, which is what `kind` is for.
 
 **Whether several titles are cuts of one film or separate works.**
 `selection.relationship()` already answers this from the clip lists -- cuts of
@@ -67,9 +85,12 @@ one film share a backbone of segments, episodes share nothing. Two cuts become
 one folder with two version labels. Separate works become separate folders, or
 a season of episodes.
 
-**Film or series.** Nothing on the disc says. A single long title with extras
-is a film; several similar-length titles with no shared backbone, across discs
-of one collection, is a series.
+**Film or series.** Nothing on the disc says, so the operator does, in `kind`.
+Where it is empty the old reading still applies -- a single long title with
+extras is a film; several similar-length titles with no shared backbone,
+across discs of one collection, is a series -- but an empty `kind` means no
+play-all is inferred from runtime, so a season disc will offer its play-all as
+content and someone has to notice.
 
 ## What it can look up
 
