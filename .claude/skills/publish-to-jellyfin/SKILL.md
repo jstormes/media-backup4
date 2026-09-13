@@ -395,6 +395,81 @@ Staging is local; the library is on another machine. `rsync` over SSH, not a
 mount: a failed transfer is then an exit code to retry rather than a hung job,
 and nothing on the ripper depends on the server being up.
 
+### Check the destination has room first
+
+**Ask before sending, not halfway through.** A transfer that runs the library
+volume out of space does not fail cleanly: rsync writes a short file and moves
+on, and what is left on the server is a title that exists, has a plausible
+name, and is truncated. Step 9's checksum would catch it -- but only after
+hours of copying, and only if it is reached. The check below costs one `ssh`.
+
+Ask rsync what it would actually send. The dry run in this step already has
+to happen, so take the number from it rather than measuring the staging tree:
+a re-run after a partial transfer sends far less than the tree holds, and
+`du` is the wrong tool anyway -- it reports allocated blocks and folds
+hardlinks together, which is exactly what the staging area is made of.
+
+```bash
+STAGE=/srv/media-backup/ready_to_add
+REMOTE=/srv/dev-disk-by-uuid-78AA-077A
+MARGIN=$((10 * 1024 * 1024 * 1024))   # config.min_free_margin_bytes
+
+need=$(rsync -rltD --no-perms --no-owner --no-group --modify-window=1 \
+         --dry-run --stats "$STAGE/Movies/" "nas2:$REMOTE/Movies/" \
+       | awk -F': *' '/Total transferred file size/ {gsub(/[^0-9]/,"",$2); print $2}')
+avail=$(ssh -n nas2 "df -B1 --output=avail $(printf '%q' "$REMOTE") | tail -1")
+
+if [ -z "$need" ] || [ -z "$avail" ]; then
+    echo "could not measure -- an empty number is a broken command, not a pass"
+    exit 1
+fi
+if [ "$need" -gt "$((avail - MARGIN))" ]; then
+    printf 'NOT ENOUGH ROOM: need %s, free %s, margin %s\n' \
+        "$(numfmt --to=iec --suffix=B "$need")" \
+        "$(numfmt --to=iec --suffix=B "$avail")" \
+        "$(numfmt --to=iec --suffix=B "$MARGIN")"
+    exit 1
+fi
+```
+
+**An empty measurement is not a pass, and the two empties are not symmetric.**
+Both numbers come from parsing a command that can fail -- an unreachable host,
+a path that does not exist, an rsync that errored before printing its stats.
+Measured 2026-09-13:
+
+* an empty `$avail` makes `$((avail - MARGIN))` negative, so the test reads as
+  "not enough room" and stops. Safe, but by luck rather than design.
+* an empty `$need` makes `[ "" -gt N ]` fail with `integer expression
+  expected` and **exit status 2**, which `if` treats as false -- so it falls
+  through the whole check to the `else` and proceeds blind. This is the
+  dangerous one, and it is the one that looks like a pass.
+
+Test both for empty before comparing. Same lesson as the empty hash in step 9:
+a check that cannot run must say so, not answer.
+
+Keep the margin. exFAT on a 7.3T volume uses large clusters, so a folder of
+short extras costs more on the server than the apparent sizes add up to, and
+the library volume is not the only thing writing to that disk.
+
+**Report the headroom even when it passes**, because the operator's decision
+about what to rip next depends on it and nothing else surfaces the number.
+Measured 2026-09-13: Media1 was at 89% -- 6.5T used of 7.3T, 885G free -- and
+publishing four films took 69G of it. At that size the volume has room for
+roughly a dozen more collections, which is worth saying out loud long before
+it becomes urgent.
+
+**Watch the mirror, not just the volume.** Backup1 is a cold mirror of Media1
+and is 7.28T against Media1's 7.28T, so as Media1 fills the slack disappears.
+The backup script checks that the backup drive is large enough for what Media1
+is using and declines the drive when it is not -- correct behaviour that
+presents as a night the backup did not run, with nothing but a log line to say
+why. When free space on Media1 drops below about 500G, say so in the report:
+the fix is moving content to Media2, which sat at 56% on 2026-09-13, and it is
+much easier before the mirror stops fitting than after. See
+`docs/jellyfin/backup-strategy.md`.
+
+### The transfer itself
+
 **The library filesystem is exFAT.** That drives every flag here:
 
 ```bash
