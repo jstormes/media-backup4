@@ -20,8 +20,15 @@ def bcd(n):
     return ((n // 10) << 4) | (n % 10)
 
 
-def pgc(seconds, cells, programs=1):
-    """One program chain: a header, then a cell position table at +0xEA."""
+def pgc(seconds, cells, programs=1, sectors=None):
+    """One program chain: a header, a cell position table, a playback table.
+
+    ``cells`` is (vob, cell) pairs for the position table at +0xEA -- what each
+    cell is called. ``sectors`` is (first, last) pairs for the playback table at
+    +0xE8 -- where each cell's bytes are. Omitting ``sectors`` leaves the
+    playback pointer at zero, which is the case a reader must survive: the
+    position table alone still identifies the cells.
+    """
     body = bytearray(0x100)
     body[2] = programs
     body[3] = len(cells)
@@ -30,13 +37,24 @@ def pgc(seconds, cells, programs=1):
     body[6] = bcd(seconds % 60)
     position = 0x100
     struct.pack_into(">H", body, dvd.PGC_CELL_POSITION, position)
-    # Deliberately fill the *playback* table with values that would look like
-    # plausible cells, so a parser reading 0xE8 by mistake fails visibly.
-    struct.pack_into(">H", body, dvd.PGC_CELL_PLAYBACK, 0)
     table = bytearray()
     for vob, cell in cells:
         table += struct.pack(">H", vob) + bytes([0, cell])
-    return bytes(body) + bytes(table)
+    if sectors is None:
+        # A parser that reads the position data at 0xE8 by mistake gets zeros
+        # here rather than something plausible, so the mistake shows up.
+        struct.pack_into(">H", body, dvd.PGC_CELL_PLAYBACK, 0)
+        return bytes(body) + bytes(table)
+
+    playback = position + len(table)
+    struct.pack_into(">H", body, dvd.PGC_CELL_PLAYBACK, playback)
+    entries = bytearray()
+    for first, last in sectors:
+        entry = bytearray(dvd.CELL_PLAYBACK_ENTRY)
+        struct.pack_into(">I", entry, dvd.CELL_FIRST_SECTOR, first)
+        struct.pack_into(">I", entry, dvd.CELL_LAST_SECTOR, last)
+        entries += entry
+    return bytes(body) + bytes(table) + bytes(entries)
 
 
 def pgcit(chains):
@@ -210,3 +228,42 @@ class TestRefusals(unittest.TestCase):
         with self.assertRaises(dvd.DvdError) as caught:
             read_fake(disc)
         self.assertIn("VIDEO_TS", str(caught.exception))
+
+
+class TestWhereACellsBytesAre(unittest.TestCase):
+    """The cell playback table, which is how a cell could be extracted.
+
+    Reading what a cell is *called* identifies it; reading where it *is* is
+    what would let one be pulled out of the VOB files. The two tables are
+    indexed together and carry none of each other's fields, so a reader has to
+    keep them aligned by position and nothing else.
+    """
+
+    def chain(self, **kw):
+        return read_fake(FakeDisc([pgc(1311, [(2, 1)], **kw)]))[0]
+
+    def test_the_sector_range_is_read_from_the_playback_table(self):
+        chain = self.chain(sectors=[(1_000, 1_499)])
+        self.assertEqual((chain.cells[0].first_sector,
+                          chain.cells[0].last_sector), (1_000, 1_499))
+
+    def test_the_size_counts_both_ends(self):
+        """A cell from sector 1000 to 1499 is 500 sectors, not 499."""
+        self.assertEqual(self.chain(sectors=[(1_000, 1_499)]).cells[0].sectors, 500)
+
+    def test_a_pgc_with_no_playback_table_still_names_its_cells(self):
+        """The identity does not depend on the sectors being there."""
+        cell = self.chain().cells[0]
+        self.assertEqual((cell.vob, cell.cell), (1002, 1))
+        self.assertEqual((cell.first_sector, cell.last_sector), (0, 0))
+        self.assertEqual(cell.sectors, 0)
+
+    def test_the_sectors_survive_the_title_set_prefixing(self):
+        """read_titles rewrites every cell to prefix the VOB id with the VTS.
+
+        It builds new Cell objects to do it, so this is the test that stops the
+        sector range being dropped on the floor there.
+        """
+        cell = self.chain(sectors=[(2_000, 2_999)]).cells[0]
+        self.assertEqual(cell.vob, 1002, "prefixed with the title set")
+        self.assertEqual((cell.first_sector, cell.last_sector), (2_000, 2_999))

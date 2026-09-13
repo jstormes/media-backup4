@@ -90,6 +90,61 @@ up into a directory that already contains a backup. Moving a failed partial
 aside is therefore a *precondition* for retry, not merely a convenience for
 inspection. The destination must be empty or absent immediately before spawn.
 
+## A read error hides every later title, silently
+
+Measured 2026-09-12 on Challenge of the Superfriends disc 1, and it is the most
+dangerous behaviour in this document because the output is a shorter disc that
+reports success.
+
+The disc declares thirteen titles in its own `TT_SRPT` table -- a play-all,
+seven episodes, four menus, and an alternate authoring of episode 1. One sector
+is unreadable, at byte 3,965,775,872, on the boundary between the third
+episode's cell and the fourth's. What the scan then says:
+
+```
+MSG:2003  Error 'Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR' ...
+MSG:3028  Title #1 declared length is 2:32:16 while its real length is
+          1:27:11 - assuming fake title
+MSG:3025  Title #2 has length of 12 seconds ... therefore skipped
+MSG:3025  Title #3 has length of 66 seconds ... therefore skipped
+MSG:3025  Title #4 has length of 29 seconds ... therefore skipped
+MSG:3306  Title #5 was added (1 cell(s), 0:21:51)
+MSG:3306  Title #6 was added (1 cell(s), 0:21:45)
+MSG:3306  Title #7 was added (1 cell(s), 0:21:44)
+MSG:3025  Title #12 has length of 32 seconds ... therefore skipped
+MSG:3306  Title #13 was added (1 cell(s), 0:21:51)
+```
+
+**Titles #8, #9, #10 and #11 are never mentioned.** They are the four episodes
+whose cells lie past the unreadable sector. The engine's walk stops there, so
+it cannot measure them and does not list them; there is no message for a title
+dropped this way. The play-all gets a message, and a misleading one: its real
+length measures 1:27:11 -- the cells up to the failure -- against a declared
+2:32:16, so it is written off as a **fake title**, which is the decoy-playlist
+heuristic firing on damage rather than on protection.
+
+Four titles offered where the disc declares thirteen, and the only clue is a
+2003 among hundreds of lines.
+
+**What does not help**, all tried on this disc:
+
+* another drive -- reproduced on a Pioneer BDR-212D, a PLDS DH-16AES and an
+  Optiarc AD-7190S;
+* cleaning the disc;
+* `io_IgnoreReadErrors = "1"` with `io_ErrorRetryCount = "20"`, which produced
+  a byte-identical enumeration;
+* reading the sectors directly, which CSS scrambles -- 3,360 PES packets on
+  this disc carry scrambling bits, and no video stream can be mapped out of
+  raw sectors;
+* `backup` mode, which aborts at the first uncorrectable sector and so never
+  reaches the titles in question.
+
+**The detector is `media_backup.dvd`.** The IFO tables live at the start of the
+disc and read fine, so comparing the chains the disc declares against the
+titles the scan offered catches exactly this. `dvd.missing_from_scan()` reports
+the difference. Nothing refuses a disc over it -- by the operator's
+instruction, 2026-09-12 -- so it is a report, and reading it is the job.
+
 ## Related settings
 
 `~/.MakeMKV/settings.conf` recognises `io_ErrorRetryCount` and

@@ -845,6 +845,22 @@ Also useful: **BDMV navigation metadata is not AACS-encrypted.** Only the
 streams are, so `index.bdmv`, `MovieObject` and every `.mpls` can be parsed off
 a disc without decrypting anything.
 
+### 16.4b A scan of a damaged disc is short, and says so nowhere (2026-09-12)
+
+Challenge of the Superfriends disc 1 declares thirteen titles in `TT_SRPT`.
+MakeMKV offered four. One unreadable sector, at the boundary between the third
+episode's cell and the fourth's, stops its walk; every title past that point is
+omitted with no message at all, and the play-all is dismissed as a decoy --
+"declared length is 2:32:16 while its real length is 1:27:11 - assuming fake
+title" -- because the length it could measure stops at the damage.
+
+The consequence for a port: **a title list is not evidence of what a disc
+holds.** Four episodes were published missing, discovered months later. The
+check that catches it reads the disc's own IFO tables, which sit at the start
+of the disc and survive damage further in, and compares them against the scan
+(§9.1, `media_backup.dvd`). Details and everything that did not help are in
+docs/makemkv/message-codes.md.
+
 ### 16.5 Track selection is not controllable per run (2026-09-07)
 
 `makemkvcon --profile=<name or file>` is **accepted and ignored** — verified

@@ -18,8 +18,20 @@ Reading them gives the classification the same footing on both formats.
 disc 1, 2026-09-12: the disc declares thirteen program chains, seven of which
 are 21-minute episodes on their own VOBs. MakeMKV offered **four** titles. It
 logged a reason for skipping the four short menus and no reason at all for the
-missing episodes -- they simply never appeared. Four of the seven differ in
-runtime by under two seconds from ones it kept.
+missing episodes -- they simply never appeared.
+
+The cause, found the same day: one unreadable sector at byte 3,965,775,872,
+on the boundary between the third episode's cell and the fourth's. MakeMKV's
+walk stops there, so it cannot measure anything beyond it; the four episodes
+past the damage are omitted in silence and the play-all is dismissed as a
+decoy, "declared length is 2:32:16 while its real length is 1:27:11 - assuming
+fake title". Another drive, a clean disc and ``io_IgnoreReadErrors`` all
+produced the same enumeration; docs/makemkv/message-codes.md records the rest.
+
+**These tables are what survives that.** They live at the start of the disc,
+they are small, and they describe the whole disc including the parts a drive
+can no longer read -- which is exactly why a title list cannot be trusted as
+evidence of what a disc holds, and why this module exists.
 
 Nothing here is decrypted and nothing needs to be: CSS scrambles the payload
 in the VOB files, while ``VIDEO_TS.IFO`` and ``VTS_nn_0.IFO`` are plaintext.
@@ -49,8 +61,16 @@ PVD_SECTOR = 16
 #: Offsets into VIDEO_TS.IFO and VTS_nn_0.IFO that this module reads.
 VMG_TT_SRPT = 0xC4        # title search pointer table, sector, big-endian
 VTS_PGCIT = 0xCC          # program chain information table, sector
-PGC_CELL_PLAYBACK = 0xE8  # NOT what we want -- see the module docstring
-PGC_CELL_POSITION = 0xEA  # what we want
+PGC_CELL_PLAYBACK = 0xE8  # where each cell's data is: 24 bytes per cell
+PGC_CELL_POSITION = 0xEA  # what each cell is called: 4 bytes per cell
+
+#: Offsets within one 24-byte cell playback entry. The first VOBU's start
+#: sector and the last VOBU's end sector bracket the cell's data exactly, both
+#: counted from the beginning of VTS_nn_1.VOB with the title set's VOB files
+#: treated as one stream.
+CELL_PLAYBACK_ENTRY = 24
+CELL_FIRST_SECTOR = 8
+CELL_LAST_SECTOR = 20
 
 
 class DvdError(Exception):
@@ -59,13 +79,39 @@ class DvdError(Exception):
 
 @dataclass(frozen=True)
 class Cell:
-    """One cell, addressed the way the whole disc addresses it."""
+    """One cell: what it is called, and where its bytes are.
+
+    ``vob``/``cell`` come from the cell *position* table and are the identity
+    -- the DVD's equivalent of a Blu-ray clip id. ``first_sector`` and
+    ``last_sector`` come from the cell *playback* table and are where the data
+    lives, counted from the start of the title set's VOB files as if they were
+    one stream. They are 0 when the playback table was not read.
+
+    Both tables are indexed the same way, so entry i of one describes the same
+    cell as entry i of the other. That is the only thing tying them together;
+    neither carries the other's ids.
+    """
 
     vob: int
     cell: int
+    first_sector: int = 0
+    last_sector: int = 0
 
     def __str__(self) -> str:
         return f"{self.vob}/{self.cell}"
+
+    @property
+    def sectors(self) -> int:
+        """How many sectors the cell occupies, counting both ends.
+
+        Zero when the playback table was not read: a cell whose range is
+        unknown occupies an unknown number of sectors, and "1" -- which is what
+        an inclusive count of 0..0 comes to -- would be a lie a caller could
+        act on.
+        """
+        if not self.last_sector:
+            return 0
+        return self.last_sector - self.first_sector + 1
 
 
 @dataclass
@@ -160,10 +206,20 @@ def _program_chains(read, extent: int, size: int) -> list:
                    + _bcd(ifo[pgc + 6]))
         position = struct.unpack(">H", ifo[pgc + PGC_CELL_POSITION:
                                            pgc + PGC_CELL_POSITION + 2])[0]
+        playback = struct.unpack(">H", ifo[pgc + PGC_CELL_PLAYBACK:
+                                           pgc + PGC_CELL_PLAYBACK + 2])[0]
         cells = []
         for c in range(cell_count):
             at = pgc + position + c * 4
-            cells.append(Cell(struct.unpack(">H", ifo[at:at + 2])[0], ifo[at + 3]))
+            first = last = 0
+            if playback:
+                entry = pgc + playback + c * CELL_PLAYBACK_ENTRY
+                first = struct.unpack(">I", ifo[entry + CELL_FIRST_SECTOR:
+                                                entry + CELL_FIRST_SECTOR + 4])[0]
+                last = struct.unpack(">I", ifo[entry + CELL_LAST_SECTOR:
+                                               entry + CELL_LAST_SECTOR + 4])[0]
+            cells.append(Cell(struct.unpack(">H", ifo[at:at + 2])[0], ifo[at + 3],
+                              first, last))
         chains.append(ProgramChain(i + 1, seconds, programs, cells))
     return chains
 
@@ -187,7 +243,9 @@ def read_titles(device: str) -> list:
             continue
         extent, size = files[name]
         for chain in _program_chains(read, extent, size):
-            chain.cells = [Cell(vts * 1000 + c.vob, c.cell) for c in chain.cells]
+            chain.cells = [Cell(vts * 1000 + c.vob, c.cell,
+                                c.first_sector, c.last_sector)
+                           for c in chain.cells]
             chain.number = vts * 100 + chain.number
             chains.append(chain)
     if not chains:
