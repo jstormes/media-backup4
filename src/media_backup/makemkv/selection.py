@@ -511,7 +511,7 @@ def shared_ratio(first, second) -> float:
     return len(a & b) / min(len(a), len(b))
 
 
-def relationship(titles, threshold: float = 0.5) -> str:
+def relationship(titles, threshold: float = 0.25) -> str:
     """Are these alternate cuts of one work, or separate works?
 
     Seamless branching is why this is answerable. A disc carrying two cuts
@@ -521,6 +521,43 @@ def relationship(titles, threshold: float = 0.5) -> str:
 
     Two episodes of a series share nothing but perhaps a title card, so they
     fall well under the threshold and read as separate works.
+
+    **Where the threshold comes from.** It was 0.5, set from Hancock alone at
+    10/19 = 0.526 -- a hair above the line, which made the line look safe when
+    it was merely lucky. Furious 7 then landed at 7/15 = 0.467 and its two
+    cuts were called separate works, which they are not: one film, one IMDb
+    entry, a seven-clip shared backbone and eight exclusive clips on each
+    side. Nothing about the disc was ambiguous; the threshold was simply set
+    inside the cluster it was meant to bound.
+
+    Every Blu-ray pair in the archive that clears the exclusivity gate below,
+    measured 2026-09-13 across 137 collections:
+
+    ======  ==================  ===================================
+    ratio   disc                what it is
+    ======  ==================  ===================================
+    0.000   HEAVY_METAL         two authorings, no shared clips
+    0.000   REAL_GENIUS         two authorings, no shared clips
+    0.000   DARK_CITY           two authorings, no shared clips
+    0.467   FAST7_NA            theatrical + extended
+    0.524   FAST6_NA            theatrical + extended
+    0.526   HANCOCK             theatrical + extended
+    0.667   FAST_FIVE_DOM       theatrical + extended
+    ======  ==================  ===================================
+
+    Branching lands in 0.467-0.667 and everything else at 0.000, so the
+    honest threshold goes in the void between them rather than at either
+    edge. 0.25 sits roughly midway: well clear of the lowest real branching
+    case, and still several times higher than incidental overlap can reach --
+    two unrelated titles sharing a studio ident or a title card out of a
+    dozen-odd clips come to 0.08 or so.
+
+    **A zero does not mean "not two cuts".** The three at 0.000 include Dark
+    City, whose 1:51:43 and 1:40:29 are the director's cut and the theatrical.
+    A disc that authors its cuts as two complete streams instead of branching
+    shares no clips at all, and no threshold recovers that -- this function
+    can only see branching. Those read as separate works and need the
+    operator, which is what step 4 of the publish skill asks for.
 
     A shared backbone is necessary and not sufficient: each cut must also
     carry clips the other lacks, which is what branching *is*. Requiring that

@@ -194,6 +194,54 @@ class TestTellingTheCutsApart(unittest.TestCase):
         self.assertEqual(relationship(disc), SEPARATE_WORKS)
 
 
+# Verbatim from the Furious 7 Blu-ray, read off the disc on 2026-09-13. The
+# theatrical and extended cuts, seamlessly branched: fifteen clips each, seven
+# of them shared. 7/15 = 0.467, which the original 0.5 threshold -- set from
+# Hancock's 0.526 and nothing else -- called two separate films.
+FURIOUS_7_THEATRICAL = title(
+    5, "2:17:26",
+    segments="825,835,826,836,827,837,828,838,829,839,830,840,831,841,832")
+FURIOUS_7_EXTENDED = title(
+    6, "2:19:54",
+    segments="845,835,846,836,847,837,848,838,849,839,850,840,851,841,852")
+
+
+class TestTheThresholdSitsBetweenTheClusters(unittest.TestCase):
+    """Branching lands at 0.467-0.667; everything else at 0.000.
+
+    Measured 2026-09-13 over every Blu-ray pair in the 137-collection archive
+    that clears the exclusivity gate. The threshold belongs in the gap, and
+    the bug was that it sat inside the branching cluster instead.
+    """
+
+    def test_furious_7_is_two_cuts_not_two_films(self):
+        pair = [FURIOUS_7_EXTENDED, FURIOUS_7_THEATRICAL]
+        self.assertAlmostEqual(shared_ratio(*pair), 7 / 15, places=3)
+        self.assertEqual(relationship(pair), CUT_VARIANTS)
+
+    def test_the_old_threshold_is_what_got_it_wrong(self):
+        """Pin the regression: 0.5 still misreads this disc."""
+        pair = [FURIOUS_7_EXTENDED, FURIOUS_7_THEATRICAL]
+        self.assertEqual(relationship(pair, threshold=0.5), SEPARATE_WORKS)
+
+    def test_each_cut_carries_its_own_clips(self):
+        a = set(segments(FURIOUS_7_THEATRICAL))
+        b = set(segments(FURIOUS_7_EXTENDED))
+        self.assertEqual(len(a & b), 7)
+        self.assertEqual(len(a - b), 8)
+        self.assertEqual(len(b - a), 8)
+
+    def test_incidental_overlap_is_still_separate_works(self):
+        """A shared ident or title card must not read as branching.
+
+        Two unrelated titles sharing one clip out of a dozen come to 0.083,
+        which is what the gap below 0.25 is there to absorb.
+        """
+        disc = [title(0, "1:40:00", segments="900," + ",".join(str(n) for n in range(1, 12))),
+                title(1, "1:38:00", segments="900," + ",".join(str(n) for n in range(20, 31)))]
+        self.assertLess(shared_ratio(*disc), 0.25)
+        self.assertEqual(relationship(disc), SEPARATE_WORKS)
+
 
 class TestMatchingFilesToTitles(unittest.TestCase):
     """Which .mkv on disk is which title -- the link the archive needs."""

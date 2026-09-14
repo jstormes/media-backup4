@@ -197,7 +197,13 @@ Read the shape of what is left:
   ordinary case.
 - **Two long titles** → two films, or two cuts of one. `relationship()`
   decides it on a Blu-ray; on a DVD the clip lists cannot decide it, so use
-  the disc label and ask. Cuts of one film → one folder, one file per cut,
+  the disc label and ask. **A `shared_ratio` of exactly 0.000 is not an
+  answer either.** A disc that authors its cuts as two complete streams
+  rather than branching shares no clips, and reads as `separate_works` for
+  the same reason a double feature does. Three discs in the archive are that
+  shape, and Dark City's 1:51:43 and 1:40:29 are the director's cut and the
+  theatrical. Two long titles with no overlap and no second film on the
+  sleeve is a question for the operator, not a verdict. Cuts of one film → one folder, one file per cut,
   version labels. Two films → two folders.
 - **Many titles of similar length, none dominant** → episodes, or a kids'
   disc of shorts. This is a series, and you need season and episode numbers
@@ -464,8 +470,9 @@ The backup script checks that the backup drive is large enough for what Media1
 is using and declines the drive when it is not -- correct behaviour that
 presents as a night the backup did not run, with nothing but a log line to say
 why. When free space on Media1 drops below about 500G, say so in the report:
-the fix is moving content to Media2, which sat at 56% on 2026-09-13, and it is
-much easier before the mirror stops fitting than after. See
+the fix is moving content to Media2, which was all but empty on 2026-09-13 --
+22M used of 7.3T, so the whole drive is available -- and it is much easier
+before the mirror stops fitting than after. See
 `docs/jellyfin/backup-strategy.md`.
 
 ### The transfer itself
