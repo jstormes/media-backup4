@@ -100,12 +100,19 @@ class Config:
     #: A run with no progress and no messages for this long is wedged. A disc
     #: grinding through read retries still emits MSG:2003, so it is not silent.
     stall_timeout_s: int = 1800
-    #: Budget for the short probes -- enumerate and scan. These finish in
-    #: seconds on healthy hardware (14s for four loaded drives, measured
-    #: 2026-09-07), and they produce no output at all when a drive wedges,
-    #: so stall_timeout_s cannot see them. A drive that hangs MakeMKV's
-    #: probe holds the job forever without this.
+    #: How long a probe -- enumerate or scan -- may say nothing before it is
+    #: judged wedged. Measured from its last line, not from its start: a
+    #: drive that hangs MakeMKV's probe produces no output at all (an LG
+    #: GHA2N, 2026-09-07), while a healthy scan of a dense DVD9 is slow but
+    #: talking. Timed from the start instead, this killed six scans at
+    #: exactly 300s on 2026-09-12: Appleseed Ex Machina, Superman/Shazam and
+    #: Baby's Day Out, all dual-layer, all reported as operator cancels.
     probe_timeout_s: int = 300
+    #: The backstop under it: a probe that keeps talking but never finishes.
+    #: Silence cannot catch that one, and without a ceiling it holds the
+    #: drive forever. Generous on purpose -- this is the bound that should
+    #: never fire on a disc that is merely slow.
+    probe_max_duration_s: int = 3600
     max_job_duration_s: int = 21600
     eject_on_success: bool = True
     #: How many failed attempts' data to keep. Logs are always kept; three
@@ -299,6 +306,9 @@ def validate(cfg: Config) -> list[Problem]:
         problems.append(Problem(ERROR, "cache_mb must be at least 1"))
     if cfg.probe_timeout_s < 1:
         problems.append(Problem(ERROR, "probe_timeout_s must be at least 1"))
+    if cfg.probe_max_duration_s < cfg.probe_timeout_s:
+        problems.append(Problem(ERROR, "probe_max_duration_s must be at least "
+                                       "probe_timeout_s"))
 
     return problems
 
