@@ -32,6 +32,28 @@ Stage under `media_path` (`/srv/media-backup/ready_to_add`) unless the
 operator says otherwise. `config.validate` only cares about `collections/`,
 `finished/` and `cancelled/`, so a sibling directory there is harmless.
 
+### Where it goes
+
+**The destination is defined once, here. Derive every command from it.**
+
+```bash
+PUBLISH_HOST=nas2
+PUBLISH_ROOT=/srv/dev-disk-by-uuid-0A63-B16B   # the drive labelled Media2
+```
+
+It was written out four separate times before 2026-09-18 -- twice as a
+`REMOTE` variable that meant two different things (one with `/Movies` on the
+end, one without) and once hardcoded into the rsync that actually moves the
+bytes, so the dry run and the real run could have disagreed about where they
+were sending 20 GB. Changing drives meant finding all four.
+
+**Media1 (`/srv/dev-disk-by-uuid-78AA-077A`) is the old target.** Everything
+published before 2026-09-18 is there and stays there; nothing is written to it
+any more. A film that is in neither drive was never published. Both are
+mounted on `nas2` and both are in the Jellyfin container, as `/media` and
+`/media2` -- but a Jellyfin *library* covers a drive only if it has been added
+to one, so a title on Media2 is invisible until that is done.
+
 Naming rules are in `docs/jellyfin/library-layout.md`; the contract this
 implements is `docs/jellyfin/publishing.md`. Read the layout doc before naming
 anything — the rules are exact and unforgiving.
@@ -417,13 +439,16 @@ hardlinks together, which is exactly what the staging area is made of.
 
 ```bash
 STAGE=/srv/media-backup/ready_to_add
-REMOTE=/srv/dev-disk-by-uuid-78AA-077A
+# PUBLISH_HOST and PUBLISH_ROOT are defined once, at the top of this skill.
 MARGIN=$((10 * 1024 * 1024 * 1024))   # config.min_free_margin_bytes
 
 need=$(rsync -rltD --no-perms --no-owner --no-group --modify-window=1 \
-         --dry-run --stats "$STAGE/Movies/" "nas2:$REMOTE/Movies/" \
+         --dry-run --stats "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/" \
        | awk -F': *' '/Total transferred file size/ {gsub(/[^0-9]/,"",$2); print $2}')
-avail=$(ssh -n nas2 "df -B1 --output=avail $(printf '%q' "$REMOTE") | tail -1")
+# df takes the drive root, not the Movies directory -- the free space that
+# matters is the volume's, and asking about a subdirectory would be the same
+# number by luck rather than by meaning.
+avail=$(ssh -n "$PUBLISH_HOST" "df -B1 --output=avail $(printf '%q' "$PUBLISH_ROOT") | tail -1")
 
 if [ -z "$need" ] || [ -z "$avail" ]; then
     echo "could not measure -- an empty number is a broken command, not a pass"
@@ -459,21 +484,28 @@ the library volume is not the only thing writing to that disk.
 
 **Report the headroom even when it passes**, because the operator's decision
 about what to rip next depends on it and nothing else surfaces the number.
-Measured 2026-09-13: Media1 was at 89% -- 6.5T used of 7.3T, 885G free -- and
-publishing four films took 69G of it. At that size the volume has room for
-roughly a dozen more collections, which is worth saying out loud long before
-it becomes urgent.
+Report it for the drive being published to, which is `$PUBLISH_ROOT` and
+nothing else -- the number for the drive that *used* to be the target is not
+the number that governs the next transfer.
 
-**Watch the mirror, not just the volume.** Backup1 is a cold mirror of Media1
-and is 7.28T against Media1's 7.28T, so as Media1 fills the slack disappears.
-The backup script checks that the backup drive is large enough for what Media1
-is using and declines the drive when it is not -- correct behaviour that
-presents as a night the backup did not run, with nothing but a log line to say
-why. When free space on Media1 drops below about 500G, say so in the report:
-the fix is moving content to Media2, which was all but empty on 2026-09-13 --
-22M used of 7.3T, so the whole drive is available -- and it is much easier
-before the mirror stops fitting than after. See
-`docs/jellyfin/backup-strategy.md`.
+Measured 2026-09-18, after the target moved to Media2: 122G used of 7.3T, 7.2T
+free, which is room for the foreseeable future. For scale, publishing four
+films took 69G. Say the figure out loud anyway; the point of the line is that
+the trend is visible long before it is urgent.
+
+**This is why the target moved.** Media1 reached 95% -- 413G free of 7.3T --
+on 2026-09-14, and a volume that full stops being safe to publish onto: exFAT
+on a 7.3T volume uses large clusters, so the apparent sizes understate the
+cost, and the margin check above starts refusing transfers that would in fact
+have fitted. Media2 was empty and the same size.
+
+**Watch the mirror, not just the volume.** Backup1 is a cold mirror of Media1,
+sized 7.28T against Media1's 7.28T. It does not cover Media2, so a title
+published now has the server copy and the disc, and no third copy -- which
+matters at step 10, where reclaiming the archive deletes the last local copy.
+Say so in the report rather than leaving the operator to infer it. See
+`docs/jellyfin/backup-strategy.md`, which still describes Media1 as the
+publish target and has not been revised for the move.
 
 ### The transfer itself
 
@@ -482,7 +514,7 @@ before the mirror stops fitting than after. See
 ```bash
 rsync -rltDvh --no-perms --no-owner --no-group --modify-window=1 \
       --partial --append-verify \
-      "$STAGE/Movies/" nas2:/srv/dev-disk-by-uuid-78AA-077A/Movies/
+      "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/"
 ```
 
 - `--no-perms --no-owner --no-group`, and `-rltD` rather than `-a`. exFAT
@@ -559,7 +591,7 @@ than writing the loop from memory:
 
 ```bash
 STAGE=/srv/media-backup/ready_to_add/Movies
-REMOTE=/srv/dev-disk-by-uuid-78AA-077A/Movies
+REMOTE_MOVIES="$PUBLISH_ROOT/Movies"   # the root plus Movies, unlike the df above
 files=(
   "Demon Seed (1977) [imdbid-tt0075931]/Demon Seed (1977) [imdbid-tt0075931].mkv"
   "Demon Seed (1977) [imdbid-tt0075931]/extras/Additional Scene.mkv"
@@ -569,7 +601,7 @@ verified=0
 for f in "${files[@]}"; do
     local_hash=$(sha256sum "$STAGE/$f" | cut -d' ' -f1)
     # ssh -n, and printf %q -- see the three notes below.
-    remote_hash=$(ssh -n nas2 "sha256sum $(printf '%q' "$REMOTE/$f")" | cut -d' ' -f1)
+    remote_hash=$(ssh -n "$PUBLISH_HOST" "sha256sum $(printf '%q' "$REMOTE_MOVIES/$f")" | cut -d' ' -f1)
     if [ -z "$remote_hash" ]; then
         echo "NO HASH from the server for $f -- not a mismatch, a broken command"
         exit 1
@@ -672,7 +704,7 @@ Then, in this order:
 
 ```json
 {"published_at": "2026-09-07T20:49:00Z",
- "destination": "nas2:/srv/dev-disk-by-uuid-78AA-077A/Movies",
+ "destination": "nas2:/srv/dev-disk-by-uuid-0A63-B16B/Movies",
  "files": [{"staged_as": "Match Point (2005) [imdbid-tt0416320].mkv",
             "sha256": "…", "size_bytes": 6262208596}]}
 ```
