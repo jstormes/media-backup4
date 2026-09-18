@@ -120,6 +120,9 @@ class JobsTestCase(unittest.TestCase):
             self.cfg, self.store,
             runner_factory=self.runner_factory,
             ejector=self.eject,
+            # Inline, so an operator-requested eject is done by the time the
+            # call returns. There is no sleep in this file.
+            background=lambda func, name: func(),
             on_change=lambda status: self.changes.append(copy.copy(status)))
 
     # -- collaborators ------------------------------------------------------
@@ -256,6 +259,52 @@ class TestRefusals(JobsTestCase):
 # ---------------------------------------------------------------------------
 # Cancelling, abandoning, shutting down
 # ---------------------------------------------------------------------------
+
+
+class TestEjectingOnRequest(JobsTestCase):
+    """The operator asking for a tray to open, which no job does for them.
+
+    A failed run deliberately leaves its disc in the drive so it can be
+    cleaned and retried, so the only way out is by hand -- or this.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.done = []
+
+    def eject_drive(self, dev):
+        self.manager.eject_drive(dev, on_done=self.done.append)
+
+    def test_it_ejects_through_the_same_ejector_a_job_uses(self):
+        _, dev = self.add_disc()
+        self.eject_drive(dev)
+        self.assertEqual(self.ejects,
+                         [(f"/drives{fx.SR1}", f"/blocks{fx.SR1}", False)])
+
+    def test_it_unmounts_a_mounted_disc_on_the_way(self):
+        dev = drive(mount_points=["/run/media/user/disc"])
+        self.eject_drive(dev)
+        self.assertTrue(self.ejects[0][2], "the ejector is told to unmount")
+
+    def test_success_reports_no_error(self):
+        _, dev = self.add_disc()
+        self.eject_drive(dev)
+        self.assertEqual(self.done, [""])
+
+    def test_a_tray_that_will_not_open_is_reported_not_raised(self):
+        """The caller is a button. It needs words, not a traceback."""
+        self.eject_raises = RuntimeError("the drive is wedged shut")
+        _, dev = self.add_disc()
+        self.eject_drive(dev)
+        self.assertEqual(self.done, ["the drive is wedged shut"])
+
+    def test_a_drive_with_a_job_on_it_is_refused(self):
+        disc, dev = self.add_disc()
+        self.manager.enqueue(self.collection, disc, dev)
+        with self.assertRaises(jobs.JobError) as caught:
+            self.eject_drive(dev)
+        self.assertIn("Cancel it first", str(caught.exception))
+        self.assertEqual(self.ejects, [], "and nothing was asked of the drive")
 
 
 class TestCancellation(JobsTestCase):

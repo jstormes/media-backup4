@@ -42,6 +42,11 @@ DVD = state(has_media=True, label="DVD_VIDEO", fs_type="udf", media="optical_dvd
 AUDIO = state(has_media=True, media="optical_cd", audio_tracks=12)
 MOUNTED = state(has_media=True, label="DVD_VIDEO", fs_type="udf", media="optical_dvd",
                 mount_points=["/run/media/user/DVD_VIDEO"])
+#: DVD with the udisks2 object paths an eject actually needs. The bare
+#: fixtures leave them empty, which would let an eject test pass on nothing.
+LOADED = state(has_media=True, label="DVD_VIDEO", fs_type="udf",
+               media="optical_dvd", object_path="/blocks/sr0",
+               drive_object_path="/drives/x")
 
 
 @unittest.skipIf(tk is None, "no display available")
@@ -682,6 +687,121 @@ class TestBackupFlow(WindowTestCase):
         self.assertEqual(second.state, model.QUEUED)
         self.assertEqual(self.row(second, "state"), "Waiting for the drive")
         self.assertEqual(len(self.runners), 1)
+
+
+@unittest.skipIf(tk is None, "no display available")
+class TestEjectingAFailedDisc(WindowTestCase):
+    """A failed disc stays in its drive by design, so offer a way out.
+
+    The runner ejects only a good disc -- a failed one is left in place so it
+    can be cleaned and retried without being handled twice. That is right,
+    and it leaves the operator opening the tray themselves.
+    """
+
+    def setUp(self):
+        self.eject_calls = []
+        self.eject_raises = None
+        super().setUp()
+        self.insert(LOADED)
+        self.collection = self.window.create_collection("Taken 2", "0123", 1)
+        self.window.backup_drive("/dev/sr0")
+        self.disc = self.collection.discs[0]
+        self.runners[0].finish(good=False, reason="the disc is unreadable",
+                               error_kind=model.ERR_COPY)
+        self.flush()
+        self.select(self.disc)
+
+    def make_window(self, **kw):
+        manager = jobs.JobManager(
+            self.cfg, self.store, runner_factory=self.runner_factory,
+            ejector=self.record_eject,
+            background=lambda func, name: func())
+        window = MainWindow(self.cfg, self.store, manager=manager, **kw)
+        self.errors = []
+        window._confirm = lambda title, message: self.confirm
+        window._error = lambda title, message: self.errors.append((title, message))
+        return window
+
+    def record_eject(self, drive_path, block_path, *, mounted=False):
+        self.eject_calls.append((drive_path, block_path, mounted))
+        if self.eject_raises is not None:
+            raise self.eject_raises
+
+    def select(self, disc):
+        self.window._tree.selection_set(disc.disc_id)
+        self.flush()      # <<TreeviewSelect>> is a queued virtual event
+
+    def button(self, name):
+        return self.window._disc_buttons[name]
+
+    def eject_now(self):
+        """Click Eject and let the reply land.
+
+        The ejector runs inline here, but its result comes back the way job
+        events do -- through ``root.after`` -- so the flush is the callback.
+        """
+        self.window._eject_disc()
+        self.flush()
+
+    # -- what is offered ----------------------------------------------------
+
+    def test_a_failed_disc_offers_it(self):
+        self.assertEqual(self.disc.state, model.FAILED)
+        self.assertTrue(self.button("eject").winfo_manager())
+
+    def test_retrying_is_still_offered_alongside(self):
+        """Ejecting is the second choice; cleaning and retrying is the first."""
+        self.assertTrue(self.button("retry").winfo_manager())
+
+    def test_a_disc_that_is_running_again_does_not(self):
+        """The tray will not open under makemkvcon, and must not be asked."""
+        self.window._retry_disc()
+        self.flush()
+        self.assertEqual(self.disc.state, model.RESOLVING)
+        self.assertFalse(self.button("eject").winfo_manager())
+        self.assertTrue(self.button("cancel").winfo_manager())
+
+    # -- what it does -------------------------------------------------------
+
+    def test_it_ejects_the_drive_the_disc_is_in(self):
+        self.eject_now()
+        self.assertEqual(self.eject_calls, [("/drives/x", "/blocks/sr0", False)])
+
+    def test_it_refuses_to_guess_which_drive(self):
+        """Another disc is in that drive now. Opening the tray would be
+        somebody else's disc falling out, and nothing downstream would catch
+        it -- unlike a retry, which the runner refuses on the label."""
+        self.insert(state(has_media=True, label="SOMETHING_ELSE",
+                          fs_type="udf", media="optical_dvd",
+                          object_path="/blocks/sr0", drive_object_path="/drives/x"))
+        self.eject_now()
+        self.assertEqual(self.eject_calls, [])
+        self.assertEqual(self.errors[0][0], "Nothing to eject")
+
+    def test_an_empty_drive_is_not_ejected(self):
+        self.insert(EMPTY)
+        self.eject_now()
+        self.assertEqual(self.eject_calls, [])
+
+    def test_a_tray_that_will_not_open_says_so_and_names_the_drive(self):
+        self.eject_raises = RuntimeError("device is busy")
+        self.eject_now()
+        title, message = self.errors[0]
+        self.assertEqual(title, "Could not eject the disc")
+        self.assertIn("device is busy", message)
+        self.assertIn("/dev/sr0", message, "which tray to open by hand")
+
+    def test_a_second_click_while_one_is_in_flight_does_nothing(self):
+        """An unmount blocks for seconds and the button stays live."""
+        self.window._ejecting.add("/dev/sr0")
+        self.eject_now()
+        self.assertEqual(self.eject_calls, [])
+
+    def test_the_flag_is_cleared_once_it_finishes(self):
+        self.eject_now()
+        self.assertNotIn("/dev/sr0", self.window._ejecting)
+        self.eject_now()
+        self.assertEqual(len(self.eject_calls), 2, "a second ask still works")
 
 
 @unittest.skipIf(tk is None, "no display available")

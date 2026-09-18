@@ -606,9 +606,13 @@ class MainWindow:
             "start": ttk.Button(actions, text="Start", command=self._start_disc),
             "cancel": ttk.Button(actions, text="Cancel", command=self._cancel_disc),
             "retry": ttk.Button(actions, text="Retry", command=self._retry_disc),
+            "eject": ttk.Button(actions, text="Eject", command=self._eject_disc),
             "abandon": ttk.Button(actions, text="Give up on this disc",
                                   command=self._abandon_disc),
         }
+        #: Drives with an eject in flight, so a second click cannot start a
+        #: second one. An unmount takes seconds, and the button stays live.
+        self._ejecting: set[str] = set()
         #: Which buttons are packed right now. They are packed by
         #: :meth:`_show_disc_buttons` and nowhere else, so this stays true.
         self._packed_buttons: tuple[str, ...] = ()
@@ -700,8 +704,11 @@ class MainWindow:
     #: it.
     DISC_ACTIONS = {
         model.PENDING: ("start", "abandon"),
-        model.FAILED: ("retry", "abandon"),
-        model.ABANDONED: ("retry",),
+        # A failed disc is deliberately not ejected -- it stays put so it can
+        # be cleaned and retried (see the runner's eject step). That leaves
+        # the operator holding a drive they have to open by hand, so offer it.
+        model.FAILED: ("retry", "eject", "abandon"),
+        model.ABANDONED: ("retry", "eject"),
         model.DONE: (),
     }
 
@@ -893,6 +900,42 @@ class MainWindow:
         if disc is not None:
             self.manager.cancel_disc(disc.disc_id)
 
+    def _eject_disc(self) -> None:
+        """Open the tray on the drive holding the selected disc."""
+        disc = self.selected_disc
+        if disc is None:
+            return
+        drive = self._drive_holding(disc)
+        if drive is None:
+            self._error(
+                "Nothing to eject",
+                f"{disc.display_name} is not in a drive this can identify. "
+                "Open the tray on the drive itself.")
+            return
+        if drive.device in self._ejecting:
+            return
+        # Marked before the call, not after: with the synchronous dispatcher
+        # the callback runs inside eject_drive, and a flag set afterwards
+        # would be set on a drive that has already finished.
+        self._ejecting.add(drive.device)
+        try:
+            self.manager.eject_drive(drive, on_done=self._ejected(disc, drive))
+        except jobs.JobError as exc:
+            self._ejecting.discard(drive.device)
+            self._error("Cannot eject this drive", str(exc))
+
+    def _ejected(self, disc: model.Disc, drive: DriveState):
+        """The callback for one eject. Runs on the GUI thread."""
+        def done(error: str) -> None:
+            self._ejecting.discard(drive.device)
+            self._refresh_drive_card(drive.device)
+            if error:
+                self._error(
+                    "Could not eject the disc",
+                    f"{error}\n\nTake {disc.display_name} out of "
+                    f"{drive.device} by hand.")
+        return done
+
     def _abandon_disc(self) -> None:
         disc = self.selected_disc
         collection = self._collection_of(disc.disc_id) if disc else None
@@ -921,6 +964,25 @@ class MainWindow:
             return
         self._refresh_disc(disc.disc_id)
         self._refresh_drive_card(drive.device)
+
+    def _drive_holding(self, disc: model.Disc) -> DriveState | None:
+        """The drive this disc is in, or None. Refuses to guess.
+
+        :meth:`_drive_for` may guess, because a wrong guess there is caught:
+        the runner resolves the device itself and refuses a disc whose label
+        is not the one that was chosen. Nothing catches a wrong guess here --
+        the tray just opens, and it is another disc that comes out, possibly
+        one mid-copy in a drive this disc was never in.
+        """
+        last = disc.last_attempt
+        if last is None or not last.device:
+            return None
+        drive = self._drives.get(last.device)
+        if drive is None or not drive.has_media:
+            return None
+        if disc.label and drive.label and drive.label != disc.label:
+            return None
+        return drive
 
     def _drive_for(self, disc: model.Disc) -> DriveState | None:
         """Which drive to (re)start this disc in.

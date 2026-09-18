@@ -409,7 +409,11 @@ logs** — they are small and they are what diagnosing a bad disc needs.
 7. **Judge.** §10. Gather observations, apply the decision ladder.
 8. **Reconcile.** Match files on disk back to titles (§8).
 9. **Eject** — only on success. A failed disc stays in the drive so the
-   operator can take it out, clean it and retry.
+   operator can take it out, clean it and retry. Because nothing ejects it
+   for them, a failed or abandoned disc offers an **Eject** button, which
+   refuses a drive with a job on it and refuses to guess which drive the
+   disc is in — the retry path may guess, since the runner checks the label
+   and refuses a mismatch, but an eject has no such check downstream.
 
 ### Watchdogs
 

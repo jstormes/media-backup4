@@ -142,6 +142,17 @@ python3 -m media_backup
   other. A disc that needs cleaning has to be tellable from one that stalled
   for some other reason, without reading the log by eye.
 
+### Ejecting (`eject.py`, `JobManager.eject_drive`)
+
+- Only a good disc is ejected automatically. Failed and abandoned discs stay
+  put on purpose, so the GUI offers an Eject button for them.
+- An operator-requested eject runs off the GUI thread (`background=`,
+  injectable so tests run inline) and reports back through the same
+  dispatcher job events use. An unmount blocks while buffers flush.
+- `_drive_holding()` is the strict lookup, not `_drive_for()`. A wrong guess
+  about which drive to *start* is caught by the runner's label check; a wrong
+  guess about which tray to *open* is caught by nobody.
+
 ### Each run is confined to one drive (`isolation.py`)
 
 - **MakeMKV opens every optical drive on the machine at engine startup,
