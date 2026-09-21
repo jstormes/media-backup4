@@ -749,3 +749,86 @@ class TestPipelineQueue(PipelineTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Memory pressure
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryPressure(JobsTestCase):
+    """The gate that would have saved four rips on 2026-09-21.
+
+    See docs/operations/memory-pressure.md. What is checked here is that
+    pressure holds a job *back*, never that it stops one already running.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.hold = ""
+        self.timers = []
+        self.manager._pressure_probe = lambda limit: self.hold
+        self.manager._dispatch_later = lambda ms, func: self.timers.append((ms, func))
+
+    def test_high_pressure_holds_a_job_back(self):
+        disc, dev = self.add_disc()
+        self.hold = "waiting for memory pressure to fall: full avg60 is 83%, limit 30%"
+        self.manager.enqueue(self.collection, disc, dev)
+
+        self.assertEqual(self.manager.running_count, 0)
+        self.assertEqual(self.manager.queued_count, 1)
+
+    def test_the_operator_is_told_why(self):
+        disc, dev = self.add_disc()
+        self.hold = "waiting for memory pressure to fall: full avg60 is 83%, limit 30%"
+        self.manager.enqueue(self.collection, disc, dev)
+
+        self.assertIn("memory pressure", disc.state_detail)
+        self.assertTrue(any("memory pressure" in (c.step or "") for c in self.changes))
+
+    def test_a_recheck_is_scheduled_so_the_queue_is_not_stuck(self):
+        """Nothing else calls _pump when the pressure is not from a job."""
+        disc, dev = self.add_disc()
+        self.hold = "busy"
+        self.manager.enqueue(self.collection, disc, dev)
+
+        self.assertEqual(len(self.timers), 1)
+        self.assertEqual(self.timers[0][0], self.manager.PRESSURE_RECHECK_MS)
+
+    def test_the_recheck_starts_the_job_once_pressure_falls(self):
+        disc, dev = self.add_disc()
+        self.hold = "busy"
+        self.manager.enqueue(self.collection, disc, dev)
+        self.assertEqual(self.manager.running_count, 0)
+
+        self.hold = ""
+        self.timers[0][1]()          # the timer firing
+
+        self.assertEqual(self.manager.running_count, 1)
+        self.assertNotIn("memory pressure", disc.state_detail)
+
+    def test_only_one_recheck_is_scheduled_for_a_queue(self):
+        first, dev0 = self.add_disc(fx.SR0, fx.SR0_LABEL)
+        second, dev1 = self.add_disc(fx.SR1, fx.SR1_LABEL)
+        self.hold = "busy"
+        self.manager.enqueue(self.collection, first, dev0)
+        self.manager.enqueue(self.collection, second, dev1)
+
+        self.assertEqual(len(self.timers), 1)
+
+    def test_a_running_job_is_never_interrupted(self):
+        disc, dev = self.add_disc()
+        self.manager.enqueue(self.collection, disc, dev)
+        self.assertEqual(self.manager.running_count, 1)
+
+        self.hold = "busy"
+        self.manager._pump()
+
+        self.assertEqual(self.manager.running_count, 1)
+
+    def test_no_pressure_no_hold(self):
+        disc, dev = self.add_disc()
+        self.manager.enqueue(self.collection, disc, dev)
+
+        self.assertEqual(self.manager.running_count, 1)
+        self.assertEqual(self.timers, [])
