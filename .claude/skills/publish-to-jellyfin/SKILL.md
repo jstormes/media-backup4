@@ -32,6 +32,28 @@ Stage under `media_path` (`/srv/media-backup/ready_to_add`) unless the
 operator says otherwise. `config.validate` only cares about `collections/`,
 `finished/` and `cancelled/`, so a sibling directory there is harmless.
 
+### Where it goes
+
+**The destination is defined once, here. Derive every command from it.**
+
+```bash
+PUBLISH_HOST=nas2
+PUBLISH_ROOT=/srv/dev-disk-by-uuid-0A63-B16B   # the drive labelled Media2
+```
+
+It was written out four separate times before 2026-09-18 -- twice as a
+`REMOTE` variable that meant two different things (one with `/Movies` on the
+end, one without) and once hardcoded into the rsync that actually moves the
+bytes, so the dry run and the real run could have disagreed about where they
+were sending 20 GB. Changing drives meant finding all four.
+
+**Media1 (`/srv/dev-disk-by-uuid-78AA-077A`) is the old target.** Everything
+published before 2026-09-18 is there and stays there; nothing is written to it
+any more. A film that is in neither drive was never published. Both are
+mounted on `nas2` and both are in the Jellyfin container, as `/media` and
+`/media2` -- but a Jellyfin *library* covers a drive only if it has been added
+to one, so a title on Media2 is invisible until that is done.
+
 Naming rules are in `docs/jellyfin/library-layout.md`; the contract this
 implements is `docs/jellyfin/publishing.md`. Read the layout doc before naming
 anything — the rules are exact and unforgiving.
@@ -197,7 +219,13 @@ Read the shape of what is left:
   ordinary case.
 - **Two long titles** → two films, or two cuts of one. `relationship()`
   decides it on a Blu-ray; on a DVD the clip lists cannot decide it, so use
-  the disc label and ask. Cuts of one film → one folder, one file per cut,
+  the disc label and ask. **A `shared_ratio` of exactly 0.000 is not an
+  answer either.** A disc that authors its cuts as two complete streams
+  rather than branching shares no clips, and reads as `separate_works` for
+  the same reason a double feature does. Three discs in the archive are that
+  shape, and Dark City's 1:51:43 and 1:40:29 are the director's cut and the
+  theatrical. Two long titles with no overlap and no second film on the
+  sleeve is a question for the operator, not a verdict. Cuts of one film → one folder, one file per cut,
   version labels. Two films → two folders.
 - **Many titles of similar length, none dominant** → episodes, or a kids'
   disc of shorts. This is a series, and you need season and episode numbers
@@ -395,12 +423,98 @@ Staging is local; the library is on another machine. `rsync` over SSH, not a
 mount: a failed transfer is then an exit code to retry rather than a hung job,
 and nothing on the ripper depends on the server being up.
 
+### Check the destination has room first
+
+**Ask before sending, not halfway through.** A transfer that runs the library
+volume out of space does not fail cleanly: rsync writes a short file and moves
+on, and what is left on the server is a title that exists, has a plausible
+name, and is truncated. Step 9's checksum would catch it -- but only after
+hours of copying, and only if it is reached. The check below costs one `ssh`.
+
+Ask rsync what it would actually send. The dry run in this step already has
+to happen, so take the number from it rather than measuring the staging tree:
+a re-run after a partial transfer sends far less than the tree holds, and
+`du` is the wrong tool anyway -- it reports allocated blocks and folds
+hardlinks together, which is exactly what the staging area is made of.
+
+```bash
+STAGE=/srv/media-backup/ready_to_add
+# PUBLISH_HOST and PUBLISH_ROOT are defined once, at the top of this skill.
+MARGIN=$((10 * 1024 * 1024 * 1024))   # config.min_free_margin_bytes
+
+need=$(rsync -rltD --no-perms --no-owner --no-group --modify-window=1 \
+         --dry-run --stats "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/" \
+       | awk -F': *' '/Total transferred file size/ {gsub(/[^0-9]/,"",$2); print $2}')
+# df takes the drive root, not the Movies directory -- the free space that
+# matters is the volume's, and asking about a subdirectory would be the same
+# number by luck rather than by meaning.
+avail=$(ssh -n "$PUBLISH_HOST" "df -B1 --output=avail $(printf '%q' "$PUBLISH_ROOT") | tail -1")
+
+if [ -z "$need" ] || [ -z "$avail" ]; then
+    echo "could not measure -- an empty number is a broken command, not a pass"
+    exit 1
+fi
+if [ "$need" -gt "$((avail - MARGIN))" ]; then
+    printf 'NOT ENOUGH ROOM: need %s, free %s, margin %s\n' \
+        "$(numfmt --to=iec --suffix=B "$need")" \
+        "$(numfmt --to=iec --suffix=B "$avail")" \
+        "$(numfmt --to=iec --suffix=B "$MARGIN")"
+    exit 1
+fi
+```
+
+**An empty measurement is not a pass, and the two empties are not symmetric.**
+Both numbers come from parsing a command that can fail -- an unreachable host,
+a path that does not exist, an rsync that errored before printing its stats.
+Measured 2026-09-13:
+
+* an empty `$avail` makes `$((avail - MARGIN))` negative, so the test reads as
+  "not enough room" and stops. Safe, but by luck rather than design.
+* an empty `$need` makes `[ "" -gt N ]` fail with `integer expression
+  expected` and **exit status 2**, which `if` treats as false -- so it falls
+  through the whole check to the `else` and proceeds blind. This is the
+  dangerous one, and it is the one that looks like a pass.
+
+Test both for empty before comparing. Same lesson as the empty hash in step 9:
+a check that cannot run must say so, not answer.
+
+Keep the margin. exFAT on a 7.3T volume uses large clusters, so a folder of
+short extras costs more on the server than the apparent sizes add up to, and
+the library volume is not the only thing writing to that disk.
+
+**Report the headroom even when it passes**, because the operator's decision
+about what to rip next depends on it and nothing else surfaces the number.
+Report it for the drive being published to, which is `$PUBLISH_ROOT` and
+nothing else -- the number for the drive that *used* to be the target is not
+the number that governs the next transfer.
+
+Measured 2026-09-18, after the target moved to Media2: 122G used of 7.3T, 7.2T
+free, which is room for the foreseeable future. For scale, publishing four
+films took 69G. Say the figure out loud anyway; the point of the line is that
+the trend is visible long before it is urgent.
+
+**This is why the target moved.** Media1 reached 95% -- 413G free of 7.3T --
+on 2026-09-14, and a volume that full stops being safe to publish onto: exFAT
+on a 7.3T volume uses large clusters, so the apparent sizes understate the
+cost, and the margin check above starts refusing transfers that would in fact
+have fitted. Media2 was empty and the same size.
+
+**Watch the mirror, not just the volume.** Backup1 is a cold mirror of Media1,
+sized 7.28T against Media1's 7.28T. It does not cover Media2, so a title
+published now has the server copy and the disc, and no third copy -- which
+matters at step 10, where reclaiming the archive deletes the last local copy.
+Say so in the report rather than leaving the operator to infer it. See
+`docs/jellyfin/backup-strategy.md`, which still describes Media1 as the
+publish target and has not been revised for the move.
+
+### The transfer itself
+
 **The library filesystem is exFAT.** That drives every flag here:
 
 ```bash
 rsync -rltDvh --no-perms --no-owner --no-group --modify-window=1 \
       --partial --append-verify \
-      "$STAGE/Movies/" nas2:/srv/dev-disk-by-uuid-78AA-077A/Movies/
+      "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/"
 ```
 
 - `--no-perms --no-owner --no-group`, and `-rltD` rather than `-a`. exFAT
@@ -477,7 +591,7 @@ than writing the loop from memory:
 
 ```bash
 STAGE=/srv/media-backup/ready_to_add/Movies
-REMOTE=/srv/dev-disk-by-uuid-78AA-077A/Movies
+REMOTE_MOVIES="$PUBLISH_ROOT/Movies"   # the root plus Movies, unlike the df above
 files=(
   "Demon Seed (1977) [imdbid-tt0075931]/Demon Seed (1977) [imdbid-tt0075931].mkv"
   "Demon Seed (1977) [imdbid-tt0075931]/extras/Additional Scene.mkv"
@@ -487,7 +601,7 @@ verified=0
 for f in "${files[@]}"; do
     local_hash=$(sha256sum "$STAGE/$f" | cut -d' ' -f1)
     # ssh -n, and printf %q -- see the three notes below.
-    remote_hash=$(ssh -n nas2 "sha256sum $(printf '%q' "$REMOTE/$f")" | cut -d' ' -f1)
+    remote_hash=$(ssh -n "$PUBLISH_HOST" "sha256sum $(printf '%q' "$REMOTE_MOVIES/$f")" | cut -d' ' -f1)
     if [ -z "$remote_hash" ]; then
         echo "NO HASH from the server for $f -- not a mismatch, a broken command"
         exit 1
@@ -590,7 +704,7 @@ Then, in this order:
 
 ```json
 {"published_at": "2026-09-07T20:49:00Z",
- "destination": "nas2:/srv/dev-disk-by-uuid-78AA-077A/Movies",
+ "destination": "nas2:/srv/dev-disk-by-uuid-0A63-B16B/Movies",
  "files": [{"staged_as": "Match Point (2005) [imdbid-tt0416320].mkv",
             "sha256": "…", "size_bytes": 6262208596}]}
 ```

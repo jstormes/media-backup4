@@ -9,6 +9,7 @@ import dataclasses
 import signal
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -56,6 +57,20 @@ class FastClock:
 
     def __call__(self):
         self.now += self.step
+        return self.now
+
+
+class ManualClock:
+    """A clock that moves only when the test says so.
+
+    FastClock cannot express "ten minutes have passed but it spoke a second
+    ago", which is exactly the state a slow-but-healthy probe is in.
+    """
+
+    def __init__(self, now=0.0):
+        self.now = now
+
+    def __call__(self):
         return self.now
 
 
@@ -541,6 +556,200 @@ class TestWatchdogs(RunnerTestCase):
 
         self.assertIn(signal.SIGTERM, h.processes[-1].signals)
         self.assertEqual(h.final.verdict.outcome, outcome.CANCELLED)
+
+
+class TestTheProbeWatchdog(RunnerTestCase):
+    """What bounds a probe, and what does not.
+
+    Driven a call at a time rather than through a run: the watchdog fires
+    from an idle poll, an idle poll needs a real second of silence, and this
+    file has no sleep in it. The policy is what regressed, so the policy is
+    what is tested.
+    """
+
+    def watchdog(self, started=0.0):
+        clock = ManualClock(started)
+        runner = BackupRunner(self.request(), lambda event: None,
+                              spawn=lambda argv: None, clock=clock)
+        return runner, clock, runner._probe_watchdog(started, "disc scan")
+
+    def test_a_slow_probe_that_is_still_talking_is_left_alone(self):
+        """The regression. Six scans died of this on 2026-09-12.
+
+        Ten minutes into a dual-layer DVD9, the scan is well past
+        probe_timeout_s and has never once been quiet. Judged on its age it
+        is shot; judged on its silence it is simply working.
+        """
+        runner, clock, check = self.watchdog()
+        clock.now = 600.0
+        runner._last_activity_at = 595.0      # it spoke five seconds ago
+
+        check()
+
+        self.assertFalse(runner._cancelled.is_set(),
+                         "a probe is judged on its silence, not its age")
+
+    def test_a_silent_probe_is_stopped_and_called_stalled(self):
+        runner, clock, check = self.watchdog()
+        runner._last_activity_at = 0.0
+        clock.now = self.cfg.probe_timeout_s + 1
+
+        check()
+
+        self.assertTrue(runner._cancelled.is_set())
+        self.assertEqual(runner._cancel_reason, model.ERR_STALLED)
+        self.assertIn("said nothing", runner._probe_stall_reason)
+
+    def test_a_probe_that_talks_forever_still_hits_a_ceiling(self):
+        """Silence cannot catch this one, so something else has to."""
+        runner, clock, check = self.watchdog()
+        clock.now = self.cfg.probe_max_duration_s + 1
+        runner._last_activity_at = clock.now - 1    # talking to the last
+
+        check()
+
+        self.assertTrue(runner._cancelled.is_set())
+        self.assertEqual(runner._cancel_reason, model.ERR_TIMEOUT)
+        self.assertIn("still going", runner._probe_stall_reason)
+
+
+class TestAStoppedScanSaysWhoStoppedIt(RunnerTestCase):
+    """A watchdog kill is not an operator cancel, and must not read as one.
+
+    Both arrive as the same set flag. Reporting the watchdog's as "cancelled"
+    told the operator they had pressed a button they never pressed, and filed
+    the timeout under an error_kind that means a human made a choice -- which
+    is how six dead scans sat in the archive looking like housekeeping.
+    """
+
+    def silent_scan(self):
+        h = Harness([fx.ENUMERATION_LINES, SILENT])
+        runner = BackupRunner(
+            self.request(), h.emit, spawn=h.spawn,
+            clock=FastClock(self.cfg.probe_timeout_s + 1), ejector=h.eject,
+            free_space=lambda: self.FREE_SPACE)
+        runner.start()
+        runner.join(timeout=10)
+        return h
+
+    def test_a_scan_the_watchdog_stopped_is_not_reported_as_cancelled(self):
+        h = self.silent_scan()
+        self.assertEqual(h.final.error_kind, model.ERR_STALLED)
+        self.assertIn("said nothing", h.final.verdict.reason)
+
+    def test_a_stopped_enumeration_is_not_reported_as_a_missing_drive(self):
+        """A killed probe's drive list is short, so the device is not in it.
+
+        Judged before the cancel, that reads as device_not_found -- a
+        hardware fault, and the wrong thing to hand the operator.
+        """
+        h = Harness([SILENT])          # the enumeration never says a word
+        runner = BackupRunner(
+            self.request(), h.emit, spawn=h.spawn,
+            clock=FastClock(self.cfg.probe_timeout_s + 1), ejector=h.eject,
+            free_space=lambda: self.FREE_SPACE)
+        runner.start()
+        runner.join(timeout=10)
+
+        self.assertEqual(h.final.error_kind, model.ERR_STALLED)
+        self.assertIn("said nothing", h.final.verdict.reason)
+
+    def test_a_scan_the_operator_stopped_still_is(self):
+        h = Harness([fx.ENUMERATION_LINES, SILENT])
+        runner = BackupRunner(self.request(), h.emit, spawn=h.spawn,
+                              clock=h.clock, ejector=h.eject,
+                              free_space=lambda: self.FREE_SPACE)
+        runner.start()
+        deadline = time.monotonic() + 10
+        # Until the scan is the process a cancel would reach. Spinning rather
+        # than sleeping, to keep this file free of both.
+        while runner._process is None or len(h.processes) < 2:
+            self.assertLess(time.monotonic(), deadline, "the scan never started")
+        runner.cancel()
+        runner.join(timeout=10)
+
+        self.assertEqual(h.final.error_kind, model.ERR_CANCELLED)
+        self.assertIn("cancelled", h.final.verdict.reason)
+
+
+class TestAFailureBeforeTheCopySaysWhatItSaw(RunnerTestCase):
+    """A scan that fails has evidence, and the record has to carry it.
+
+    Taken 2, 2026-09-14: 425 uncorrectable read errors across ten .m2ts
+    streams, and the attempt recorded read_error_count 0 -- because only the
+    copy ever built an observation, and a pre-copy failure got an empty one.
+    Nothing in collection.json could tell that disc from one that stalled for
+    any other reason.
+    """
+
+    def rotten_scan(self):
+        """A scan that only ever reports read errors, then ends."""
+        h = Harness([fx.ENUMERATION_LINES, fx.ROTTEN_BD_SCAN.splitlines()])
+        self.run_job(h)
+        return h
+
+    def test_the_read_errors_reach_the_record(self):
+        h = self.rotten_scan()
+        self.assertEqual(h.final.observation.read_error_count, 4)
+
+    def test_every_probe_message_is_tallied_not_just_the_read_errors(self):
+        """Enumeration counts too -- it is a probe, and it also says things
+        worth keeping (5010, "Failed to open disc", in this fixture)."""
+        codes = self.rotten_scan().final.observation.message_codes
+        self.assertEqual(codes[2003], 4)
+        self.assertIn(5010, codes, "what the enumeration said is kept as well")
+
+    def test_a_scan_with_no_titles_still_fails_for_its_own_reason(self):
+        """The counts are evidence, not a verdict -- they must not change it."""
+        h = self.rotten_scan()
+        self.assertEqual(h.final.verdict.outcome, "failure")
+        self.assertNotEqual(h.final.error_kind, model.ERR_CANCELLED)
+
+    def test_a_watchdog_kill_carries_them_too(self):
+        """The Taken 2 shape exactly: read errors, then the ceiling fires."""
+        h = Harness([fx.ENUMERATION_LINES, fx.ROTTEN_BD_SCAN.splitlines(),
+                     SILENT])
+        runner = BackupRunner(
+            self.request(), h.emit, spawn=h.spawn,
+            clock=FastClock(self.cfg.probe_timeout_s + 1), ejector=h.eject,
+            free_space=lambda: self.FREE_SPACE)
+        runner.start()
+        runner.join(timeout=10)
+
+        self.assertEqual(h.final.observation.read_error_count, 4,
+                         "what the scan saw survives the kill")
+
+
+class TestTheAttemptLogCoversTheWholeAttempt(RunnerTestCase):
+    """The log used to be opened by the copy, so a job that died before the
+    copy left an attempt record pointing at a file that was never written --
+    the probe timeouts, which are the failures with the least to go on.
+    """
+
+    def log(self):
+        return (self.root / "logs" / "attempt-1.log").read_text()
+
+    def test_the_scan_goes_into_the_log(self):
+        h = self.scripted()
+        h.on_line = lambda proc, line: self.make_output()
+        self.run_job(h)
+
+        log = self.log()
+        self.assertIn("# disc scan", log)
+        self.assertIn("TINFO:", log, "what the scan actually said")
+
+    def test_a_job_that_dies_in_the_scan_still_leaves_a_log(self):
+        h = Harness([fx.ENUMERATION_LINES, SILENT])
+        runner = BackupRunner(
+            self.request(), h.emit, spawn=h.spawn,
+            clock=FastClock(self.cfg.probe_timeout_s + 1), ejector=h.eject,
+            free_space=lambda: self.FREE_SPACE)
+        runner.start()
+        runner.join(timeout=10)
+
+        self.assertTrue((self.root / "logs" / "attempt-1.log").is_file(),
+                        "the attempt record names this file; it has to exist")
+        self.assertIn("# drive enumeration", self.log())
 
 
 class TestTitleScan(RunnerTestCase):

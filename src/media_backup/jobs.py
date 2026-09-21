@@ -38,6 +38,7 @@ tens of gigabytes. The operator cleans the disc and asks again, which is just
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -70,6 +71,11 @@ def _default_ejector(drive_object_path: str, block_object_path: str,
 def _call_now(func: Callable, *args) -> None:
     """The no-GUI dispatcher: apply the event on the thread that raised it."""
     func(*args)
+
+
+def _in_background(func: Callable, name: str) -> None:
+    """Run ``func`` off the calling thread. Injectable so tests run inline."""
+    threading.Thread(target=func, name=name, daemon=True).start()
 
 
 @dataclass
@@ -129,12 +135,14 @@ class JobManager:
         *,
         runner_factory: Callable[..., BackupRunner] = BackupRunner,
         ejector: Callable[..., None] = _default_ejector,
+        background: Callable[[Callable, str], None] = _in_background,
         on_change: Callable[[JobStatus], None] | None = None,
     ) -> None:
         self.cfg = cfg
         self.store = store
         self._runner_factory = runner_factory
         self._ejector = ejector
+        self._background = background
         #: Called on the GUI thread after every applied event, with the
         #: job's live :class:`JobStatus`. Public so a window that did not
         #: build the manager can still wire itself to it.
@@ -253,6 +261,40 @@ class JobManager:
     def cancel_disc(self, disc_id: str, reason: str = model.ERR_CANCELLED) -> bool:
         job = self._job_for_disc(disc_id)
         return self.cancel(job.job_id, reason) if job else False
+
+    def eject_drive(self, drive, *, on_done: Callable[[str], None]) -> None:
+        """Open a drive's tray, off the calling thread.
+
+        The operator wants a failed disc out, and there is nothing left for
+        the application to do with it -- a run that failed is not ejected on
+        purpose, so that the disc can be cleaned and retried, which leaves
+        taking it out as a manual step this makes a button.
+
+        Not run inline: an unmount blocks while buffers flush, and the caller
+        is a GUI event handler. ``on_done`` is called through the same
+        dispatcher job events use -- so, on the GUI thread -- with an empty
+        string on success and the operator-facing reason otherwise.
+
+        Refuses a drive with a job on it. The tray will not open under a live
+        makemkvcon anyway, and asking is how a half-written copy becomes a
+        disc nobody can account for.
+        """
+        if self.is_busy(drive.device):
+            raise JobError(
+                f"{drive.device} is still copying a disc. Cancel it first.")
+
+        def work() -> None:
+            try:
+                self._ejector(drive.drive_object_path, drive.object_path,
+                              mounted=bool(getattr(drive, "mount_points", None)))
+            except Exception as exc:  # noqa: BLE001 -- reported, not raised
+                logger.warning("could not eject %s: %s", drive.device, exc)
+                self._dispatch(on_done, str(exc))
+                return
+            logger.info("ejected %s on request", drive.device)
+            self._dispatch(on_done, "")
+
+        self._background(work, f"eject-{drive.device}")
 
     def abandon(self, collection: model.Collection, disc: model.Disc,
                 note: str = "") -> None:

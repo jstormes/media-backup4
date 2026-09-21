@@ -409,14 +409,19 @@ logs** — they are small and they are what diagnosing a bad disc needs.
 7. **Judge.** §10. Gather observations, apply the decision ladder.
 8. **Reconcile.** Match files on disk back to titles (§8).
 9. **Eject** — only on success. A failed disc stays in the drive so the
-   operator can take it out, clean it and retry.
+   operator can take it out, clean it and retry. Because nothing ejects it
+   for them, a failed or abandoned disc offers an **Eject** button, which
+   refuses a drive with a job on it and refuses to guess which drive the
+   disc is in — the retry path may guess, since the runner checks the label
+   and refuses a mismatch, but an eject has no such check downstream.
 
 ### Watchdogs
 
 | Watchdog | Default | Why |
 |---|---|---|
 | stall | 1800 s | no progress *and* no messages. A disc grinding through read retries still emits `MSG:2003`, so it is not silent — a truly silent run is wedged. |
-| probe | 300 s | enumerate and scan finish in seconds (14 s for four loaded drives, measured 2026-09-07) and produce **no output at all** when a drive wedges, so the stall watchdog cannot see them. |
+| probe silence | 300 s | enumerate and scan produce **no output at all** when a drive wedges, so the stall watchdog cannot see them. Measured **from the probe's last line, not from its start** — a healthy scan of a dense DVD9 is slow but never quiet, and timing it from the start conflates the two (§17.7). |
+| probe ceiling | 3600 s | the backstop silence cannot see: a probe that keeps talking and never finishes. Should never fire on a disc that is merely slow. |
 | job | 21600 s | absolute ceiling. |
 
 Cancellation is process termination — robot mode offers nothing better.
@@ -634,7 +639,8 @@ measured; §16 says how.
 | `size_ratio_ceiling` | 1.5 | catches saving the same footage twice |
 | `duration_tolerance_s` | 10 | a correct Blu-ray title came back 0.6 s under |
 | `stall_timeout_s` | 1800 | |
-| `probe_timeout_s` | 300 | |
+| `probe_timeout_s` | 300 | silence, not total elapsed; §17.7 |
+| `probe_max_duration_s` | 3600 | ceiling on a probe that never stops talking |
 | `max_job_duration_s` | 21600 | |
 | `eject_on_success` | true | |
 | `keep_rejected_attempts` | 1 | |
@@ -936,6 +942,46 @@ session out mid-work. Fixtures are sparse now. Run heavy test suites under a
 memory cap so the cap dies instead of the desktop.
 
 ---
+
+### 17.7 Timing a watchdog from the start instead of the last line
+
+Cost: six disc scans, on three collections, all reported as operator cancels.
+
+`probe_timeout_s` exists for a drive that hangs MakeMKV's probe — 100% CPU,
+zero output, forever. That is a **silence** fault, and the setting was
+documented as one, but the check compared the clock against the probe's
+*start*. So it also killed every scan that simply took longer than five
+minutes, which a dual-layer DVD9 does while emitting `TINFO` rows the entire
+time. Measured 2026-09-12: Appleseed Ex Machina (both discs), Superman/Shazam
+(both discs, one retried) and Baby's Day Out, at 301.6–305.0 s each.
+
+Two mistakes compounded, and the second is the worse one:
+
+1. **A budget is not a silence detector.** The copy path had this right all
+   along — `stall_timeout_s` against the last line, `max_job_duration_s`
+   against the start, two bounds with two meanings. The probe path had one
+   bound wearing the other's name.
+2. **The kill was reported as the operator's.** Both arrive as the same
+   cancelled flag, and the scan's failure path hard-coded `cancelled`
+   rather than reading back the reason the watchdog set. A timeout therefore
+   landed in the archive as `error_kind=cancelled` — a human's decision —
+   and nothing said otherwise. **Whatever sets a flag must say why, and
+   whatever reports it must read that back.**
+
+Two more things made it hard to see, both the same shape — **the phases
+before the copy kept no evidence**:
+
+- The attempt log was opened by the copy, so a job that died in the scan left
+  a record naming a log file that was never written.
+- Only the copy built a `BackupObservation`, so a pre-copy failure reported
+  `read_error_count` 0 whatever the disc had done. Taken 2 (2026-09-14) timed
+  out with 425 uncorrectable read errors across ten `.m2ts` streams and
+  recorded zero — the evidence was in prose in the log and nowhere a query
+  could reach it.
+
+The log is opened for the whole attempt now, and the probes tally their `MSG`
+records into whatever observation the failure carries. **A phase that can fail
+has to leave behind what it saw.**
 
 ## 18. What a port should build first
 

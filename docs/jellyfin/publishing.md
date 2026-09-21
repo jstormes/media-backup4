@@ -262,3 +262,7 @@ The bar is deliberately high because this deletes the last local copy. One
 mismatched hash, one skipped disc, one disc in a state other than `done`, and
 the whole collection stays. The fallback for a lost file is re-ripping the
 physical disc, which is why the disc -- not the archive -- is the master.
+
+What stands behind the server copy once the archive is gone -- and why a
+backup that appears not to have run for months is the intended behaviour --
+is in [How the server copy is protected](backup-strategy.md).

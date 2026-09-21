@@ -125,9 +125,33 @@ python3 -m media_backup
 - The queue is bounded at one item deliberately. Unbounded, the reader races
   ahead and `_last_activity_at` lags the lines actually consumed, which is
   what the watchdogs measure.
-- `probe_timeout_s` bounds the two short commands, enumerate and scan. They
-  take seconds on healthy hardware (14s for four loaded drives), and
-  `stall_timeout_s` cannot bound them because it needs output to notice.
+- `probe_timeout_s` bounds the two short commands, enumerate and scan,
+  **against their own silence** -- measured from the last line, the way
+  `stall_timeout_s` bounds the copy. Measured from the probe's *start*
+  instead, it killed six healthy scans at 300s on 2026-09-12 and reported
+  every one as an operator cancel (SPEC §17.7). `probe_max_duration_s` is
+  the loose ceiling underneath, for a probe that talks and never finishes.
+- A watchdog kill and an operator cancel arrive as the same `_cancelled`
+  flag. Whichever sets it records **why** (`_cancel_reason`, and
+  `_probe_stall_reason` for the phases with no observation yet), and every
+  failure path reads that back rather than hard-coding "cancelled".
+- The attempt log is opened for the whole attempt, not by the copy. A job
+  that dies during the scan has to leave behind the log its record names.
+- The probes tally their `MSG` records (`_note_probe_message`) so a failure
+  before the copy carries `read_error_count` and `message_codes` like any
+  other. A disc that needs cleaning has to be tellable from one that stalled
+  for some other reason, without reading the log by eye.
+
+### Ejecting (`eject.py`, `JobManager.eject_drive`)
+
+- Only a good disc is ejected automatically. Failed and abandoned discs stay
+  put on purpose, so the GUI offers an Eject button for them.
+- An operator-requested eject runs off the GUI thread (`background=`,
+  injectable so tests run inline) and reports back through the same
+  dispatcher job events use. An unmount blocks while buffers flush.
+- `_drive_holding()` is the strict lookup, not `_drive_for()`. A wrong guess
+  about which drive to *start* is caught by the runner's label check; a wrong
+  guess about which tray to *open* is caught by nobody.
 
 ### Each run is confined to one drive (`isolation.py`)
 

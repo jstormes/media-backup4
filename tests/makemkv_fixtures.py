@@ -207,6 +207,38 @@ DVD_SCAN_NO_CINFO = "\n".join(
     line for line in DVD_SCAN.splitlines() if not line.startswith("CINFO:"))
 
 
+# --- VERBATIM CAPTURE: makemkvcon info, 2026-09-14 -------------------------
+# "Taken 2" in a Pioneer BDR-212D. The disc is unreadable at the start of ten
+# .m2ts streams, and MakeMKV retries each forever: 425 of these in the hour
+# before the probe ceiling stopped it, always offset 0, never a TINFO row.
+#
+# A scan that ends this way is the case the copy's own counters never see.
+# Two streams and four lines stand in for the storm.
+ROTTEN_BD_SCAN = "\n".join([
+    ENUMERATION_LINES[0],
+    'MSG:2003,0,3,"Error \'Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR\''
+    ' occurred while reading \'/BDMV/STREAM/00955.m2ts\' at offset \'0\'",'
+    '"Error \'%1\' occurred while reading \'%2\' at offset \'%3\'",'
+    '"Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR",'
+    '"/BDMV/STREAM/00955.m2ts","0"',
+    'MSG:2003,0,3,"Error \'Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR\''
+    ' occurred while reading \'/BDMV/STREAM/00955.m2ts\' at offset \'0\'",'
+    '"Error \'%1\' occurred while reading \'%2\' at offset \'%3\'",'
+    '"Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR",'
+    '"/BDMV/STREAM/00955.m2ts","0"',
+    'MSG:2003,0,3,"Error \'Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR\''
+    ' occurred while reading \'/BDMV/STREAM/00987.m2ts\' at offset \'0\'",'
+    '"Error \'%1\' occurred while reading \'%2\' at offset \'%3\'",'
+    '"Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR",'
+    '"/BDMV/STREAM/00987.m2ts","0"',
+    'MSG:2003,0,3,"Error \'Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR\''
+    ' occurred while reading \'/BDMV/STREAM/00987.m2ts\' at offset \'0\'",'
+    '"Error \'%1\' occurred while reading \'%2\' at offset \'%3\'",'
+    '"Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR",'
+    '"/BDMV/STREAM/00987.m2ts","0"',
+])
+
+
 # --- VERBATIM CAPTURE: makemkvcon mkv, 2026-09-07 --------------------------
 # A real run against the finished "Fresh Horses" ISO -- four titles saved in
 # one pass with --minlength. The 275 PRGV records are thinned to a

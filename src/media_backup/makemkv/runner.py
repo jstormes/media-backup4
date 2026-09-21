@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterator, Protocol
+from typing import Callable, Iterator, Protocol, TextIO
 
 from .. import events, mkv, model, tracks
 from ..config import Config, free_bytes, room_for
@@ -220,6 +220,18 @@ class BackupRunner:
         self._titles_total = 1
         self._log_written = 0
         self._log_truncated = False
+        #: Open for the whole attempt, so enumeration and the scan land in it
+        #: too. Opened per-title, the log did not exist at all for a job that
+        #: died before the first copy -- which is every probe timeout, and
+        #: exactly the failure with the least to go on without one.
+        self._log_file: TextIO | None = None
+        #: Why a watchdog stopped a probe, in the shape _fail wants. The copy
+        #: keeps the same thing on its observation; a probe has no
+        #: observation to keep it on yet.
+        self._probe_stall_reason = ""
+        #: What the probes said, tallied the way the copy tallies its own.
+        #: See _note_probe_message.
+        self._probe_codes: dict[int, int] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -263,8 +275,25 @@ class BackupRunner:
             titles=tuple(self._titles),
         ))
 
+    def _stopped_reason(self, if_operator: str) -> str:
+        """Why the job stopped, in the operator's words or the watchdog's.
+
+        Both arrive as the same set _cancelled flag, and reporting a watchdog
+        kill as a plain "cancelled" tells the operator they did something
+        they did not do -- and buries the timeout that actually happened
+        under an error_kind that says a human made a choice. The copy has
+        always kept the distinction on its observation (stall_reason); this
+        is the same distinction for the phases that have no observation yet.
+        """
+        return self._probe_stall_reason or if_operator
+
     def _fail(self, reason: str, error_kind: str, obs: BackupObservation | None = None) -> None:
-        obs = obs or BackupObservation(disc_size_bytes=self.request.disc_size_bytes)
+        if obs is None:
+            # Built here rather than empty, so a failure before the copy
+            # still carries what the probes saw. See _note_probe_message.
+            obs = BackupObservation(
+                disc_size_bytes=self.request.disc_size_bytes,
+                message_codes=dict(self._probe_codes))
         self._finish(Verdict("failure", reason, {"error_kind": error_kind}),
                      obs, error_kind)
 
@@ -272,7 +301,10 @@ class BackupRunner:
 
     def _run(self) -> None:
         try:
-            self._run_inner()
+            self.request.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.request.log_path.open("w", errors="replace") as log:
+                self._log_file = log
+                self._run_inner()
         except _Aborted:
             # The step that raised has already emitted its own FINISHED event;
             # emitting a second one would release the drive slot twice.
@@ -280,6 +312,8 @@ class BackupRunner:
         except Exception as exc:  # noqa: BLE001
             logger.exception("job %s crashed", self.request.job_id)
             self._fail(f"internal error: {exc}", model.ERR_SPAWN)
+        finally:
+            self._log_file = None
 
     def _run_inner(self) -> None:
         req = self.request
@@ -287,12 +321,18 @@ class BackupRunner:
         # 1. Which disc:N is this device right now?
         self._state(model.RESOLVING, "identifying the drive")
         resolution = self._resolve_index()
-        if not resolution:
-            self._fail(resolution.detail, resolution.error_kind)
+
+        # Asked before the resolution is judged, because a stopped
+        # enumeration resolves to nothing: its drive list is whatever had
+        # arrived before the kill, so the device is "not in MakeMKV's drive
+        # list" -- which is true, and says nothing about why.
+        if self._cancelled.is_set():
+            self._fail(self._stopped_reason("cancelled before the copy started"),
+                       self._cancel_reason or model.ERR_CANCELLED)
             return
 
-        if self._cancelled.is_set():
-            self._fail("cancelled before the copy started", model.ERR_CANCELLED)
+        if not resolution:
+            self._fail(resolution.detail, resolution.error_kind)
             return
 
         # 2. Will it fit?
@@ -315,7 +355,8 @@ class BackupRunner:
         self._state(model.SCANNING, "reading the disc")
         self._scan_titles(resolution.index)
         if self._cancelled.is_set():
-            self._fail("cancelled during the disc scan", model.ERR_CANCELLED)
+            self._fail(self._stopped_reason("cancelled during the disc scan"),
+                       self._cancel_reason or model.ERR_CANCELLED)
             return
 
         # 5. Which of them to save -- and whether this disc can be done at all
@@ -490,19 +531,15 @@ class BackupRunner:
         obs = BackupObservation(disc_size_bytes=req.disc_size_bytes)
         started = self._clock()
         self._last_activity_at = started
-        self._log_written = 0
-        self._log_truncated = False
         self._titles_done = 0
         self._titles_total = max(1, len(chosen.titles))
         codes: list[int] = []
 
-        req.log_path.parent.mkdir(parents=True, exist_ok=True)
-        with req.log_path.open("w", errors="replace") as log:
-            for position, title in enumerate(chosen.titles):
-                if self._cancelled.is_set():
-                    break
-                self._titles_done = position
-                codes.append(self._save_one(index, title, obs, log, started))
+        for position, title in enumerate(chosen.titles):
+            if self._cancelled.is_set():
+                break
+            self._titles_done = position
+            codes.append(self._save_one(index, title, obs, started))
 
         # The first thing to go wrong is the thing to report. A later run
         # exiting 0 does not undo an earlier one that did not.
@@ -513,7 +550,7 @@ class BackupRunner:
         return obs
 
     def _save_one(self, index: int, title: model.Title,
-                  obs: BackupObservation, log, started: float) -> int:
+                  obs: BackupObservation, started: float) -> int:
         req = self.request
         argv = command.mkv_argv(req.cfg, index, req.dest, title.index, req.device)
 
@@ -526,15 +563,15 @@ class BackupRunner:
         with self._process_lock:
             self._process = process
 
-        log.write(f"# title {title.index} ({title.source or title.duration})\n")
-        self._log(log, "# " + " ".join(argv) + "\n")
+        self._log(f"# title {title.index} ({title.source or title.duration})\n")
+        self._log("# " + " ".join(argv) + "\n")
         # Through _iter_lines, so the watchdogs also run while the process
         # is silent. Driving them from arriving lines alone means a wedged
         # makemkvcon -- the one case stall_timeout_s exists for -- is the one
         # case they never catch.
         for line in self._iter_lines(
                 process, lambda: self._check_watchdogs(obs, started)):
-            self._log(log, line)
+            self._log(line)
             self._consume(line, obs)
             self._check_watchdogs(obs, started)
 
@@ -543,13 +580,20 @@ class BackupRunner:
             self._process = None
         return code
 
-    def _log(self, log, line: str) -> None:
+    def _log(self, line: str) -> None:
         """Append to the attempt log, up to the configured budget.
 
         The budget spans the whole attempt, not each title: a read-error storm
         on the first of four titles must not buy the other three a fresh
-        allowance apiece.
+        allowance apiece. The scan gets no allowance of its own either -- it
+        is part of the same attempt.
+
+        A no-op before the log is open, which is only the case for a runner
+        driven a method at a time by a test.
         """
+        log = self._log_file
+        if log is None:
+            return
         budget = self.request.cfg.max_log_bytes
         if self._log_written < budget:
             log.write(line)
@@ -733,22 +777,73 @@ class BackupRunner:
             yield item
 
     def _probe_watchdog(self, started: float, what: str) -> Callable[[], None]:
-        """Give up on a probe that has gone silent past its budget."""
+        """Bound a probe the same two ways the copy is bounded.
+
+        Silence is the fault this exists for: a drive that hangs MakeMKV's
+        probe emits nothing at all while burning CPU (an LG GHA2N, measured
+        2026-09-07), and a watchdog driven by arriving lines never runs.
+
+        Measuring from the probe's *start* instead of from its last line
+        conflates that with a scan that is merely slow, and the two are not
+        alike -- a dual-layer DVD9 can take many minutes to inventory while
+        emitting TINFO rows the whole way. Six such scans were killed at
+        exactly 300s on 2026-09-12 (Appleseed Ex Machina, Superman/Shazam,
+        Baby's Day Out), every one of them working when it was shot.
+
+        So: silence against ``probe_timeout_s``, and a far looser ceiling on
+        the whole probe for the case silence cannot see -- one that talks
+        forever and never finishes.
+        """
         def check() -> None:
             if self._cancelled.is_set():
                 return
-            budget = self.request.cfg.probe_timeout_s
-            if self._clock() - started > budget:
-                logger.warning("job %s: %s produced no result in %ds",
-                               self.request.job_id, what, budget)
+            cfg = self.request.cfg
+            now = self._clock()
+            if now - started > cfg.probe_max_duration_s:
+                logger.warning("job %s: %s still running after %ds",
+                               self.request.job_id, what,
+                               cfg.probe_max_duration_s)
+                self._probe_stall_reason = (
+                    f"the {what} was still going after "
+                    f"{cfg.probe_max_duration_s // 60} minutes")
                 self.cancel(model.ERR_TIMEOUT)
+            elif now - self._last_activity_at > cfg.probe_timeout_s:
+                logger.warning("job %s: %s said nothing for %ds",
+                               self.request.job_id, what, cfg.probe_timeout_s)
+                self._probe_stall_reason = (
+                    f"the {what} said nothing for "
+                    f"{cfg.probe_timeout_s // 60} minutes")
+                self.cancel(model.ERR_STALLED)
         return check
+
+    def _note_probe_message(self, line: str) -> None:
+        """Tally a probe's MSG records, so a failure before the copy can say
+        what it saw.
+
+        Only the copy built an observation, so every pre-copy failure
+        reported ``read_error_count`` 0 no matter what the disc had done.
+        Taken 2 timed out on 2026-09-14 with 425 uncorrectable read errors
+        across ten .m2ts streams, and its record said zero -- the evidence
+        was in the attempt log and nowhere a query could reach it. A disc
+        that needs cleaning and a disc that stalled for some other reason
+        have to be distinguishable without reading prose.
+
+        Cheap on purpose: a read-error storm is hundreds of thousands of
+        lines, and the prefix test skips the parse for all but MSG records.
+        """
+        if not line.startswith("MSG:"):
+            return
+        record = parse_line(line)
+        if isinstance(record, Msg):
+            self._probe_codes[record.code] = self._probe_codes.get(record.code, 0) + 1
 
     def _run_to_completion(self, argv: list[str], what: str = "probe") -> list[str]:
         """Run a short makemkvcon command and collect its output.
 
-        Bounded by ``probe_timeout_s``: these commands finish in seconds, and
-        the job has nothing to wait on if one never returns.
+        Bounded by ``probe_timeout_s`` against its own silence, and by
+        ``probe_max_duration_s`` overall -- see :meth:`_probe_watchdog`. The
+        output is teed to the attempt log on its way past, so a probe that
+        gets stopped leaves behind what it had managed to say.
         """
         try:
             process = self._spawn(argv)
@@ -758,7 +853,17 @@ class BackupRunner:
         with self._process_lock:
             self._process = process
         started = self._clock()
-        lines = list(self._iter_lines(process, self._probe_watchdog(started, what)))
+        # A probe that has not spoken yet is measured from its start; every
+        # line after that resets the clock the watchdog reads.
+        self._last_activity_at = started
+        self._log(f"# {what}\n")
+        self._log("# " + " ".join(argv) + "\n")
+        lines = []
+        for line in self._iter_lines(process, self._probe_watchdog(started, what)):
+            self._last_activity_at = self._clock()
+            self._log(line)
+            self._note_probe_message(line)
+            lines.append(line)
         process.wait()
         with self._process_lock:
             self._process = None
