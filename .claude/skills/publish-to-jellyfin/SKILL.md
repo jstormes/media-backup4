@@ -423,6 +423,48 @@ Staging is local; the library is on another machine. `rsync` over SSH, not a
 mount: a failed transfer is then an exit code to retry rather than a hung job,
 and nothing on the ripper depends on the server being up.
 
+### Check the machine can take the load first
+
+**This check comes before the space check, because it can stop the transfer
+from ever starting.** On 2026-09-21 a publish rsync was started while four
+rips were running. Eleven minutes later `systemd-oomd` killed the terminal
+scope holding all four, losing 118 GB of partial work. The transfer itself
+survived -- it was in a different cgroup -- so the cost landed entirely on the
+ripping, where it was invisible until someone looked.
+
+The transfer is never the urgent thing. The archive is not going anywhere, and
+a disc that has to be re-ripped costs hours.
+
+```bash
+# Rips in flight. Use -x, not -f: pgrep -f searches whole command lines and
+# the shell running the check has the pattern in its own, so it matches
+# itself. Measured 2026-09-21: -f reported 1 on a box with no rip running.
+rips=$(pgrep -x makemkvcon | wc -l)
+# 'full avg60' -- the share of the last minute in which everything stalled
+# waiting on memory. See docs/operations/memory-pressure.md.
+psi=$(awk '/^full/ {for (i=2;i<=NF;i++) if ($i ~ /^avg60=/) {sub(/avg60=/,"",$i); print $i}}' \
+        /proc/pressure/memory 2>/dev/null)
+
+if [ "$rips" -ge 2 ]; then
+    echo "WAIT: $rips rips running. Publishing alongside them is what cost 118 GB."
+    exit 1
+fi
+if [ -n "$psi" ] && [ "${psi%%.*}" -ge 20 ]; then
+    echo "WAIT: memory pressure full avg60 is ${psi}%. Let the box settle."
+    exit 1
+fi
+echo "load OK: ${rips:-0} rips, pressure ${psi:-unknown}%"
+```
+
+**An empty `$psi` is not a failure here.** Unlike the checksum in step 9, a
+missing `/proc/pressure/memory` means the kernel does not report PSI, not that
+a command broke -- and refusing to ever publish on that basis would be worse
+than the hazard. The rip count is the check that must pass.
+
+If a transfer has to run alongside rips, cap it so it cannot dominate
+writeback -- `rsync --bwlimit=20M`. The 2026-09-21 transfer sustained 22.5
+MB/s unthrottled, so this costs little.
+
 ### Check the destination has room first
 
 **Ask before sending, not halfway through.** A transfer that runs the library

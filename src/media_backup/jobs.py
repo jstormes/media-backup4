@@ -42,7 +42,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import events, model
+from . import events, model, pressure
 from .config import Config
 from .makemkv import outcome
 from .makemkv.enumeration import DriveIndex
@@ -137,17 +137,30 @@ class JobManager:
         ejector: Callable[..., None] = _default_ejector,
         background: Callable[[Callable, str], None] = _in_background,
         on_change: Callable[[JobStatus], None] | None = None,
+        pressure_probe: Callable[[float], str] = pressure.blocked,
     ) -> None:
         self.cfg = cfg
         self.store = store
         self._runner_factory = runner_factory
         self._ejector = ejector
         self._background = background
+        #: Asked, before each start, whether pressure should hold the queue.
+        #: Injected so tests need no /proc, and so a caller could substitute
+        #: a different signal without touching the gate.
+        self._pressure_probe = pressure_probe
         #: Called on the GUI thread after every applied event, with the
         #: job's live :class:`JobStatus`. Public so a window that did not
         #: build the manager can still wire itself to it.
         self.on_change = on_change
         self._dispatch: Callable[..., None] = _call_now
+        #: Re-check a pressure-blocked queue later. A no-op without a
+        #: tkinter loop: headless callers pump on their own events, and a
+        #: manager that silently span a timer would be untestable.
+        self._dispatch_later: Callable[[int, Callable[[], None]], None] = \
+            lambda delay_ms, func: None
+        #: Set while the queue is held back by memory pressure, so the
+        #: re-check is scheduled once rather than once per queued job.
+        self._pressure_hold = ""
 
         self._jobs: dict[str, _Job] = {}
         self._queue: list[str] = []
@@ -167,6 +180,7 @@ class JobManager:
         the runner thread, which is right for tests and wrong for a GUI.
         """
         self._dispatch = lambda func, *args: root.after(0, func, *args)
+        self._dispatch_later = lambda delay_ms, func: root.after(delay_ms, func)
 
     # -- queries ------------------------------------------------------------
 
@@ -323,8 +337,30 @@ class JobManager:
 
     # -- the queue ----------------------------------------------------------
 
+    #: How long to wait before re-checking pressure. One ``avg60`` window,
+    #: because a shorter retry re-reads a number that has barely moved.
+    PRESSURE_RECHECK_MS = 60_000
+
     def _pump(self) -> None:
-        """Start whatever the slots now allow, in the order it was queued."""
+        """Start whatever the slots now allow, in the order it was queued.
+
+        Memory pressure gates *starting*, never running work. A job already
+        writing a 76 GB title is the expensive thing to lose; the cheap thing
+        to postpone is the one that has not begun. See
+        docs/operations/memory-pressure.md.
+        """
+        hold = self._pressure_probe(getattr(self.cfg, "max_memory_pressure", 0.0))
+        if hold and self._queue:
+            self._hold_queue(hold)
+            return
+        if self._pressure_hold:
+            self._pressure_hold = ""
+            for job_id in list(self._queue):
+                job = self._jobs.get(job_id)
+                if job is not None and job.status.state == model.QUEUED:
+                    self._set_disc_state(job, model.QUEUED, "waiting for the drive")
+                    self._notify(job)
+
         for job_id in list(self._queue):
             job = self._jobs.get(job_id)
             if job is None:
@@ -340,6 +376,23 @@ class JobManager:
             self._queue.remove(job_id)
             self._busy[job.device] = job_id
             self._start(job)
+
+    def _hold_queue(self, reason: str) -> None:
+        """Keep the queue waiting, say so, and arrange to look again.
+
+        Without the re-check a queue blocked by pressure from something that
+        is not a job -- a publish transfer, say -- would never start, because
+        nothing else calls :meth:`_pump`.
+        """
+        first = not self._pressure_hold
+        self._pressure_hold = reason
+        for job_id in list(self._queue):
+            job = self._jobs.get(job_id)
+            if job is not None and job.status.state == model.QUEUED:
+                self._set_disc_state(job, model.QUEUED, reason)
+                self._notify(job)
+        if first:
+            self._dispatch_later(self.PRESSURE_RECHECK_MS, self._pump)
 
     def _start(self, job: _Job) -> None:
         try:

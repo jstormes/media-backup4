@@ -83,6 +83,18 @@ class Config:
     bwrap: Path = Path("/usr/bin/bwrap")
     #: 0 means one job per drive with no cap.
     max_concurrent_jobs: int = 0
+    #: Refuse to *start* a job while ``full avg60`` memory pressure is above
+    #: this percentage; 0 disables the check. Running jobs are never touched
+    #: -- the point is to stop adding load, not to interrupt work already
+    #: half-done.
+    #:
+    #: systemd-oomd kills the user session at 50% sustained for 20s, so a
+    #: useful limit sits well below that: by the time pressure reaches 50 the
+    #: decision has already been taken. 30 is a reasonable starting point and
+    #: is a judgement, not a measurement -- no baseline of this machine's
+    #: pressure during ordinary ripping has been taken. See
+    #: docs/operations/memory-pressure.md.
+    max_memory_pressure: float = 0.0
     #: Headroom required beyond the disc size before a rip may start.
     min_free_margin_bytes: int = 10 * 1024**3
     #: Fraction of the scanned titles' reported size that must land on disk.
@@ -304,6 +316,16 @@ def validate(cfg: Config) -> list[Problem]:
         problems.append(Problem(ERROR, "size_ratio_ceiling must be at least 1"))
     if cfg.cache_mb < 1:
         problems.append(Problem(ERROR, "cache_mb must be at least 1"))
+
+    if cfg.max_memory_pressure < 0 or cfg.max_memory_pressure > 100:
+        problems.append(Problem(
+            ERROR, "max_memory_pressure is a percentage: use 0 to disable, "
+                   "or a value between 0 and 100"))
+    elif cfg.max_memory_pressure >= 50:
+        problems.append(Problem(
+            WARNING, f"max_memory_pressure is {cfg.max_memory_pressure:g}%, at or "
+                     "above the 50% where systemd-oomd kills the user session. "
+                     "The gate would open only after the kill decision is made."))
     if cfg.probe_timeout_s < 1:
         problems.append(Problem(ERROR, "probe_timeout_s must be at least 1"))
     if cfg.probe_max_duration_s < cfg.probe_timeout_s:

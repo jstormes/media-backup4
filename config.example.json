@@ -10,6 +10,7 @@
   "isolate_drives": true,
   "bwrap": "/usr/bin/bwrap",
   "max_concurrent_jobs": 0,
+  "max_memory_pressure": 0,
   "min_free_margin_bytes": 10737418240,
   "size_ratio_floor": 0.7,
   "size_ratio_ceiling": 1.5,
