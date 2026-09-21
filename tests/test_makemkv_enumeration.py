@@ -51,6 +51,55 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(r.error_kind, enum.LABEL_MISMATCH)
         self.assertIn("DVD_VIDEO", r.detail)
 
+    def test_makemkv_hash_suffix_is_not_a_disagreement(self):
+        """MakeMKV decorates some names; udisks2 never sees the decoration.
+
+        A real Proof DVD reads as 'PROOF' to udisks2 and 'PROOF#BB91' to
+        MakeMKV. Comparing those with != refused the disc twice on 2026-09-20,
+        both times with zero bytes read.
+        """
+        drives = enum.parse_drives(
+            ['DRV:0,2,999,1,"drive","PROOF#BB91","/dev/sr0"'])
+        r = enum.resolve(drives, "/dev/sr0", "PROOF")
+        self.assertTrue(r, r.detail)
+        self.assertEqual(r.index, 0)
+
+    def test_underscore_suffix_is_still_a_different_disc(self):
+        """Not a prefix match: these are real, distinct discs in this archive.
+
+        TFATF/TFATF_TD are two films in one box set; THE_NOTEBOOK and
+        THE_NOTEBOOK_4X3 are the widescreen and fullscreen discs of one
+        release. Waving either through is the wrong-disc backup this guard
+        exists to prevent.
+        """
+        for held, picked in (("TFATF_TD", "TFATF"),
+                             ("THE_NOTEBOOK_4X3", "THE_NOTEBOOK"),
+                             ("TFATF", "TFATF_TD")):
+            with self.subTest(held=held, picked=picked):
+                drives = enum.parse_drives(
+                    [f'DRV:0,2,999,1,"drive","{held}","/dev/sr0"'])
+                r = enum.resolve(drives, "/dev/sr0", picked)
+                self.assertFalse(r)
+                self.assertEqual(r.error_kind, enum.LABEL_MISMATCH)
+
+    def test_discs_differing_after_the_hash_still_disagree(self):
+        """Stripping decides a failed comparison; it does not conflate discs."""
+        drives = enum.parse_drives(
+            ['DRV:0,2,999,1,"drive","BOXSET#2","/dev/sr0"'])
+        r = enum.resolve(drives, "/dev/sr0", "BOXSET#1")
+        self.assertFalse(r)
+        self.assertEqual(r.error_kind, enum.LABEL_MISMATCH)
+
+    def test_names_disagree_directly(self):
+        self.assertFalse(enum.names_disagree("PROOF#BB91", "PROOF"))
+        self.assertFalse(enum.names_disagree("PROOF", "PROOF"))
+        self.assertFalse(enum.names_disagree("", "PROOF"))
+        self.assertFalse(enum.names_disagree("PROOF", ""))
+        self.assertTrue(enum.names_disagree("BLADE", "PROOF"))
+        self.assertTrue(enum.names_disagree("BLADE#01", "PROOF"))
+        # the expected side is never stripped: udisks2 does not decorate
+        self.assertTrue(enum.names_disagree("PROOF", "PROOF#BB91"))
+
     def test_missing_label_on_either_side_does_not_block(self):
         """Unlabelled discs are real; only a positive disagreement refuses."""
         self.assertTrue(enum.resolve(self.drives, fx.SR1, ""))

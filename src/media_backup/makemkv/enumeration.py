@@ -19,7 +19,8 @@ from typing import Callable, Iterable
 
 from .records import Drv, parse_line
 
-__all__ = ["DriveIndex", "DriveRow", "Resolution", "parse_drives", "resolve"]
+__all__ = ["DriveIndex", "DriveRow", "Resolution", "names_disagree",
+           "parse_drives", "resolve"]
 
 #: How long an enumeration may be reused. Long enough for a burst of jobs
 #: starting together to share one, short enough that a disc swapped in
@@ -64,12 +65,50 @@ class Resolution:
         return self.ok
 
 
+def names_disagree(disc_name: str, expected_label: str) -> bool:
+    """Is this a *positive* disagreement about which disc is in the drive?
+
+    The two names come from different readers of different fields:
+    ``expected_label`` is what udisks2 read (the ISO9660 volume identifier),
+    ``disc_name`` is what MakeMKV reports. They usually agree, and when they
+    do that is the answer.
+
+    When they do not, the difference is not automatically a swapped disc.
+    Measured 2026-09-20: a Proof DVD reads as ``PROOF`` to udisks2 and
+    ``PROOF#BB91`` to MakeMKV, and comparing the two with ``!=`` refused the
+    disc twice -- ``read_error_count`` 0, ``bytes_written`` 0, two collections
+    cancelled without a byte being read. MakeMKV decorates the name with a
+    ``#`` suffix that udisks2 never sees, so that suffix is dropped before the
+    comparison and only the undecorated names are compared.
+
+    Nothing looser than that is safe, and in particular **not** a prefix
+    match. Across the 67 disc names in this archive two pairs stand in a
+    prefix relationship -- ``TFATF``/``TFATF_TD`` (two different films in one
+    box set) and ``THE_NOTEBOOK``/``THE_NOTEBOOK_4X3`` (the widescreen and
+    fullscreen discs of one release). Accepting a prefix would wave both
+    through, which is exactly the silent wrong-disc backup this guard exists
+    to prevent. Those suffixes are ``_``-separated, and ``_`` is an ordinary
+    volume-label character; ``#`` is not, and appears on no other disc here.
+
+    Stripping is applied only to MakeMKV's side, and only to decide a
+    comparison that already failed, so two discs that genuinely differ after a
+    ``#`` still disagree: ``BOXSET#1`` against ``BOXSET#2`` strips to
+    ``BOXSET``, which does not equal ``BOXSET#2``, and is refused.
+    """
+    if not disc_name or not expected_label:
+        return False
+    if disc_name == expected_label:
+        return False
+    return disc_name.split("#", 1)[0] != expected_label
+
+
 def resolve(drives: Iterable[Drv], device: str, expected_label: str = "") -> Resolution:
     """Find the ``disc:N`` index for ``device`` and verify its identity.
 
     ``expected_label`` is the volume label udisks2 reported when the operator
     picked the disc. If both labels are known and they disagree, the disc in
-    the drive is not the one that was chosen -- refuse.
+    the drive is not the one that was chosen -- refuse. What counts as a
+    disagreement is :func:`names_disagree`, which is not plain ``!=``.
     """
     matches = [d for d in drives if d.device == device]
     if not matches:
@@ -86,7 +125,7 @@ def resolve(drives: Iterable[Drv], device: str, expected_label: str = "") -> Res
         return Resolution(False, row=row, error_kind=NO_DISC,
                           detail=f"{device} has no disc (state {row.state})")
 
-    if expected_label and row.disc_name and row.disc_name != expected_label:
+    if names_disagree(row.disc_name, expected_label):
         return Resolution(
             False, row=row, error_kind=LABEL_MISMATCH,
             detail=(f"{device} holds {row.disc_name!r}, "
