@@ -41,6 +41,24 @@ rips and every one of them moves throughput more than vibration plausibly does:
    from the hub to the rim. A rip is ~2× faster at its end than its start.
    Comparing "a drive that started alone" with "a drive that started in a
    group" compares two different radii.
+
+   **On a dual-layer disc the curve is an inverted U, not a ramp**, and this
+   will fool you. DVD-9 and BD-50 are usually authored opposite-track-path:
+   layer 0 reads hub→rim, then layer 1 reads **rim→hub**. Read speed therefore
+   climbs to the layer break and falls all the way back. Measured 2026-09-23,
+   sr3 on an 8.19 GB DVD-9 (`TRANSFORMERS2_D1_VANILLA`, solo throughout):
+
+   ```
+   0-500 MB   3.98 MB/s  65 ms      3000-3500 MB  6.98 MB/s  37 ms   <- layer break
+   1500-2000  5.80 MB/s  45 ms      5500-6000     5.27 MB/s  50 ms
+   2500-3000  6.63 MB/s  40 ms      7500-8000     2.29 MB/s  85 ms
+   ```
+
+   Read as a time series that looks exactly like a drive degrading under load:
+   throughput halving, latency doubling. It is neither -- it is geometry, and
+   it is symmetric about the layer break at ~43% of the disc. **Always bin by
+   `disc_bytes` before concluding anything**, and check `disc_size_bytes`: over
+   ~4.7 GB is DVD-9, over ~25 GB is BD-50.
 2. **Media.** BD-50 dual-layer, BD-25 and DVD stream at completely different
    rates, and a layer change stalls outright.
 3. **Drive model.** This machine has a Pioneer BDR-212D ×2, a PLDS DH-16AES

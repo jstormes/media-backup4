@@ -11,8 +11,13 @@ One CSV row per drive per interval:
 
 `active_drives` counts optical drives that read anything in the interval;
 `other_active` is that minus this drive, which is the independent variable.
-`job_elapsed_s` is a proxy for radius -- optical is CAV, so read speed climbs
-with elapsed time, and any comparison that ignores it is comparing radii.
+
+`disc_bytes` is the radius proxy: bytes this drive has read since *this disc*
+went in, reset only when the label changes. Measured 2026-09-23, it replaces an
+earlier `job_elapsed_s` that reset whenever the drive went briefly idle --
+makemkvcon is spawned once per title, so on one 33-minute DVD rip that counter
+reset 12 times and was useless as a radius. Elapsed is still recorded, but as
+"seconds in this continuous read", which is what it actually measures.
 """
 from __future__ import annotations
 
@@ -82,11 +87,16 @@ def main() -> None:
     if new:
         w.writerow(["ts", "dev", "label", "collection", "bytes_per_s",
                     "r_await_ms", "util_pct", "reads_per_s", "active_drives",
-                    "other_active", "job_elapsed_s"])
+                    "other_active", "read_secs", "disc_bytes"])
         fh.flush()
 
     prev, prev_t = diskstats(), time.monotonic()
     starts: dict[str, float] = {}
+    # radius proxy: bytes read since this disc went in. Keyed by device and
+    # reset only when the label changes, so it survives the idle gap between
+    # two titles of one rip.
+    disc_bytes: dict[str, float] = {}
+    disc_label: dict[str, str] = {}
 
     while True:
         time.sleep(args.interval)
@@ -119,15 +129,21 @@ def main() -> None:
         for dev, v in sorted(per.items()):
             node = f"/dev/{dev}"
             info = discs.get(node, {})
+            label = info.get("label", "")
+            if disc_label.get(node) != label:
+                disc_label[node] = label
+                disc_bytes[node] = 0.0
+            disc_bytes[node] = disc_bytes.get(node, 0.0) + v["bytes_per_s"] * dt
             if v["busy"]:
                 starts.setdefault(node, t)
             else:
                 starts.pop(node, None)
-            elapsed = round(t - starts[node], 1) if node in starts else ""
-            w.writerow([stamp, dev, info.get("label", ""), info.get("collection", ""),
+            read_secs = round(t - starts[node], 1) if node in starts else ""
+            w.writerow([stamp, dev, label, info.get("collection", ""),
                         round(v["bytes_per_s"], 1), round(v["r_await_ms"], 2),
                         round(v["util_pct"], 1), round(v["reads_per_s"], 1),
-                        active, active - (1 if v["busy"] else 0), elapsed])
+                        active, active - (1 if v["busy"] else 0), read_secs,
+                        int(disc_bytes[node])])
         fh.flush()
         prev, prev_t = now, t
 

@@ -33,7 +33,8 @@ def load(path):
                 r["util_pct"] = float(r["util_pct"])
                 r["other_active"] = int(r["other_active"])
                 r["active_drives"] = int(r["active_drives"])
-                r["elapsed"] = float(r["job_elapsed_s"]) if r["job_elapsed_s"] else None
+                r["elapsed"] = float(r.get("read_secs") or r.get("job_elapsed_s") or 0) or None
+                r["disc_bytes"] = float(r.get("disc_bytes") or 0)
             except (ValueError, KeyError):
                 continue
             rows.append(r)
@@ -155,6 +156,28 @@ def main():
               f"{x['mb_before']:6.2f}->{x['mb_after']:6.2f} {dmb:+6.1f}% "
               f"{x['aw_before']:7.2f}->{x['aw_after']:7.2f} {daw:+6.1f}% "
               f"{x['elapsed_min']:6.1f}m")
+    # --- direction symmetry: the check that separates a concurrency effect
+    # from a time trend. A real neighbour effect must REVERSE sign when the
+    # neighbour leaves. A drive that degrades whether neighbours arrive or
+    # depart is simply getting slower with time, and pooling only the
+    # "started" transitions would report that as a vibration effect.
+    print("\n=== direction symmetry (per drive) ===")
+    print("    concurrency effect -> opposite signs. time trend -> same sign both ways.")
+    print(f"{'dev':5} {'started n':>9} {'med d%':>8} {'stopped n':>10} {'med d%':>8}  verdict")
+    bydev = defaultdict(lambda: {"add": [], "rem": []})
+    for x in tr:
+        d = (x["mb_after"] - x["mb_before"]) / x["mb_before"] * 100 if x["mb_before"] else 0
+        bydev[x["dev"]]["add" if x["to"] > x["from"] else "rem"].append(d)
+    for dev, g in sorted(bydev.items()):
+        a, r_ = g["add"], g["rem"]
+        ma, mr = (median(a) if a else float("nan")), (median(r_) if r_ else float("nan"))
+        if a and r_:
+            verdict = ("TIME TREND - same sign both ways" if (ma < 0) == (mr < 0)
+                       else "consistent with a concurrency effect")
+        else:
+            verdict = "need transitions in both directions"
+        print(f"{dev:5} {len(a):>9} {ma:>8.1f} {len(r_):>10} {mr:>8.1f}  {verdict}")
+
     adds = [x for x in tr if x["to"] > x["from"]]
     if adds:
         dmb = median([(x["mb_after"] - x["mb_before"]) / x["mb_before"] * 100
