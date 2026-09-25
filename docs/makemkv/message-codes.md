@@ -58,6 +58,7 @@ stop. Those are the `PRGT`/`PRGC` progress-title forms; the `MSG` forms are
 | `2003` | `Error '%1' occurred while reading '%2' at offset '%3'` | **A read error — the dirty/damaged disc signal.** Emitted once per failure, so a bad disc produces a storm. Count them. |
 | `2004` | Error transferring SCSI command to drive | Drive-level I/O failure. |
 | `5010` | `Failed to open disc` | Context-dependent — see below. |
+| `3346` | `LibreDrive compatible drive is required to open this disc - video can't be decrypted.` | **The drive cannot decrypt AACS 2.0 (UHD).** A drive/firmware limit, not a disc fault — retrying or cleaning the disc will not help. Emitted alongside `3007`, then `5010`. |
 | `5042` | `The program can't find any usable optical drives.` | No drives. |
 | `5068` | `Folder %1 already contains a backup, please choose another folder` | **The destination was not empty.** See below. |
 | `2016` | `Failed to get full access to drive "%1 %2". Make sure that you either have write access to device "%3", are member of "cdrom" group or have CAP_SYS_RAWIO enabled.` | Environment/permissions, not the disc. |
@@ -71,7 +72,7 @@ stop. Those are the `PRGT`/`PRGC` progress-title forms; the `MSG` forms are
 | Code | English |
 |---|---|
 | `1005` | `%1 started` |
-| `3007` | `Using direct disc access mode` (LibreDrive) |
+| `3007` | `Using direct disc access mode` — **not** a LibreDrive indicator; see `3346` |
 | `3025` | `Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped` |
 | `5018` | `Scanning CD-ROM devices` |
 | `5083` | `Content hash table missing, unable to verify integrity of M2TS files.` |
