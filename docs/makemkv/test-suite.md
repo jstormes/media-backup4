@@ -7,6 +7,12 @@ the Rust backend and MakeMKV.
 **Status:** Most tests verified against real hardware. Mark ⚠ where verification
 is pending (needs different disc type or longer-running job).
 
+**Coverage gap:** every case below ran on a standard Blu-ray
+(`CINFO:1,6209,"Blu-ray disc"`). No UHD disc is covered — the BU40N's firmware
+cannot decrypt AACS 2.0, and the Pioneer BDR-212D drives have not been tried
+against one. See "Direct disc access is not LibreDrive" in `README.md`. Do not
+read these results as UHD verification.
+
 ---
 
 ## 0. System prerequisites
@@ -96,7 +102,7 @@ Neither form stops MakeMKV opening every other drive first — see
 
 ```
 MSG:1005,...          ← engine started (always first)
-MSG:3007,...          ← direct disc access mode (LibreDrive)
+MSG:3007,...          ← direct disc access mode (not LibreDrive; see message-codes.md)
 MSG:5085,...          ← content hash table loaded
 MSG:3025,...          ← sub-120s clips skipped (info only)
 MSG:3307,...          ← titles discovered
