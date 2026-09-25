@@ -486,7 +486,11 @@ MARGIN=$((10 * 1024 * 1024 * 1024))   # config.min_free_margin_bytes
 
 need=$(rsync -rltD --no-perms --no-owner --no-group --modify-window=1 \
          --dry-run --stats "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/" \
-       | awk -F': *' '/Total transferred file size/ {gsub(/[^0-9]/,"",$2); print $2}')
+       | awk -F': *' '/Total transferred file size/ {gsub(/[^0-9]/,"",$NF); print $NF}')
+# $NF, not field-by-number: the skill loader substitutes a dollar followed by
+# a digit with the invocation's arguments, so the field-two reference this
+# line used to have arrived as "Last" on 2026-09-25 and emptied $need. Never
+# write a dollar-digit anywhere in this file, comments included.
 # df takes the drive root, not the Movies directory -- the free space that
 # matters is the volume's, and asking about a subdirectory would be the same
 # number by luck rather than by meaning.
