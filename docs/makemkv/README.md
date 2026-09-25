@@ -77,7 +77,7 @@ so the GUI locates `makemkvcon` correctly.
 | Version | 1.18.4. The vendor serves only the current release, so 1.18.3 can no longer be downloaded. The licence is permanent and version independent, and registers 1.18.4 unchanged. |
 | Licence | Purchased permanent key (`app_Key` starts with `M-`, not the free rotating `T-` beta key). Does not expire. |
 | Build notes | Compiles clean against **ffmpeg 8 / libavcodec 62 with no patch**. Only **Qt5** is supported — 1.18.x's `configure` knows nothing about Qt6. |
-| Verified drives | Two Pioneer `BD-RW BDR-212D` (firmware 1.02) on SATA, both reporting **"Using direct disc access mode"**. That message alone does not establish LibreDrive — see below — and **UHD has not been tested on the Pioneers**; standard Blu-ray is what is verified. **One of the two (`/dev/sr1`, `ata4`) failed at the ATA layer on 2026-09-08 and the kernel disabled it at 08:59** — every INQUIRY since returns `DID_BAD_TARGET`, so MakeMKV lists three drives, not four. A drive fault, not a MakeMKV one; see `docs/PLAN.md`. |
+| Verified drives | Two Pioneer `BD-RW BDR-212D` (firmware 1.02) on SATA, both reporting **"Using direct disc access mode"**. That message alone does not establish LibreDrive — see below. Standard Blu-ray is verified; **UHD is not — a UHD disc was tried on a Pioneer and it too needs LibreDrive firmware.** No drive in the fleet can currently read UHD. **One of the two (`/dev/sr1`, `ata4`) failed at the ATA layer on 2026-09-08 and the kernel disabled it at 08:59** — every INQUIRY since returns `DID_BAD_TARGET`, so MakeMKV lists three drives, not four. A drive fault, not a MakeMKV one; see `docs/PLAN.md`. |
 | Other drive | LG `BD-RE BU40N` (firmware FR07) over USB (Initio INIC-1618L bridge, `13fd:0840`). Reads standard Blu-ray; **confirmed unable to read UHD** — see below. This is the only drive on the second workstation. |
 
 Rebuilding it: `install-makemkv.sh` in the repo root does the whole job --
@@ -132,23 +132,34 @@ A sibling signal: UHD discs carry `AACS/ContentHash*.tbl` and a ~5 MB
 UHD disc — the sparse/overlapping allocation reports impossible values (on this
 disc `00589.m2ts` claims 93 GB, larger than the disc). Use the playlists.
 
-### Unresolved: firmware
+### Firmware: nothing here reads UHD yet
 
-Ripping UHD requires LibreDrive firmware. On the **BU40N workstation** that is
-the open item: `sdftool` is installed (symlink to `makemkvcon`) and sees the
-drive, but no `SDF.bin` is present, so no flash is possible as things stand.
-Two questions to settle before attempting one:
+Ripping UHD requires LibreDrive firmware, and **no drive here has it**. Both
+models have now been tried against a UHD disc and both need flashing — the
+BU40N on FR07 (confirmed by `MSG:3346` on *Project Hail Mary*, 2026-09-25) and
+the Pioneer BDR-212D on 1.02. Firmware 1.02 looked like a plausible LibreDrive
+revision and was not one; `MSG:3007` was never evidence either way.
 
-- the correct target revision for a BU40N, from MakeMKV's LibreDrive
-  compatibility list — not from memory;
-- whether to move the drive off the USB bridge onto direct SATA first.
+The plan is to **flash the BU40N first, because it is the cheaper drive to
+lose.** Being done on Windows with Marty's GUI SDF tool, which bundles the
+payload and firmware; the target is **BU40N 1.03MK**, which per the flashing
+guide goes on from any existing firmware, FR07 included. The `Enc` setting is
+the one that has to be right.
+
+Flashing from Linux was considered and rejected. It needs three things this
+machine does not have: `sdf.bin` (mandatory, absent — there is no
+`~/.libdriveio/`), the 1.03MK image, and **MakeMKV 1.17.7 or older** — the
+guide says newer versions do not flash correctly on Linux, and 1.18.3 is what
+is installed. `rawflash` is not a command in any installed binary; it comes
+from `sdf.bin`, which is why `sdftool -d /dev/sr0 help` hangs silently with
+nothing to enumerate. That hang says nothing about the USB bridge, which
+remains untested.
 
 Bricking a BU40N is often unrecoverable and the drives are out of production.
 
-The **Pioneer BDR-212D** drives have not been tested against a UHD disc, so
-their status is unknown rather than known-good: firmware 1.02 is a plausible
-LibreDrive revision, but `MSG:3007` on its own is not evidence either way. Put
-a UHD disc in one and check for `MSG:3346` to find out.
+Source for the procedure is the forum's [Ultimate UHD Drives Flashing
+Guide](https://forum.makemkv.com/forum/viewtopic.php?t=19634), not vendor
+documentation.
 
 ## Environment requirements
 
