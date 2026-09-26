@@ -14,7 +14,7 @@ Measured on nas2 on 2026-09-13; drives, script and plan updated 2026-09-26.
 |---|---|---|---|
 | Media1 | `/srv/dev-disk-by-uuid-78AA-077A` | exFAT, 7.3T | library published before 2026-09-18; 95% full, no longer written |
 | Media2 | `/srv/dev-disk-by-uuid-0A63-B16B` | exFAT, 7.3T | publish target since 2026-09-18; also written by the UHD test setup |
-| Backup1 | mounted at `/mnt/backup_temp/Backup1` during a run | exFAT, 7.3T | cold mirror of Media1 (copy A) |
+| Backup1 | mounted at `/mnt/backup_temp/Backup1` during a run | exFAT, 7.3T | cold mirror of Media1 (copy A); UUID `C83A-B6D6` |
 | Backup2A | mounted at `/mnt/backup_temp/Backup2A` during a run | exFAT, 7.3T | cold mirror of Media2 (copy A); ST8000DM004, serial ZR16HXZR, UUID `FEBB-79A8` |
 
 Media1 and Media2 are in `/etc/fstab` and mount at boot. **The backup drives
