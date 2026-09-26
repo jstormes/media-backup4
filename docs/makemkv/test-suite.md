@@ -8,10 +8,15 @@ the Rust backend and MakeMKV.
 is pending (needs different disc type or longer-running job).
 
 **Coverage gap:** every case below ran on a standard Blu-ray
-(`CINFO:1,6209,"Blu-ray disc"`). No UHD disc is covered, and none can be until a
-drive is flashed — neither the BU40N on FR07 nor the Pioneer BDR-212D on 1.02
-can decrypt AACS 2.0. See "Direct disc access is not LibreDrive" in `README.md`.
-Do not read these results as UHD verification.
+(`CINFO:1,6209,"Blu-ray disc"`). Do not read these results as UHD verification.
+
+UHD has since been verified for two operations only: `info` and a one-title
+`mkv`, on two UHD discs, on the flashed BU40N (1.03) and a WH16NS60 (1.02),
+2026-09-25. Both need `MSG:1011` (LibreDrive) to be present; a UHD disc
+reports the same `CINFO:1,6209,"Blu-ray disc"` as a standard one. The two
+copies ran at the same time, each under the `bwrap` drive sandbox, without
+interfering. `backup` and the error cases have not been re-run on UHD. See
+"UHD verified end to end" in `README.md`.
 
 ---
 
