@@ -407,5 +407,7 @@ lines and `TCOUNT:21`. Title 1 was the feature — `2:20:05`, `31506235392` byte
 minutes. MakeMKV auto-skipped sub-120-second clips and duplicate playlists
 (`00883.mpls is equal to title 00881.mpls`).
 
-Startup reported `Using direct disc access mode` (LibreDrive) and loaded a
-content hash table to verify M2TS integrity.
+Startup reported `Using direct disc access mode` and loaded a content hash
+table to verify M2TS integrity. That message is about bypassing the OS
+filesystem layer, not about decryption — it is not a LibreDrive indicator;
+see `message-codes.md`.

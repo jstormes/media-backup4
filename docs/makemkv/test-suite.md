@@ -7,6 +7,17 @@ the Rust backend and MakeMKV.
 **Status:** Most tests verified against real hardware. Mark ⚠ where verification
 is pending (needs different disc type or longer-running job).
 
+**Coverage gap:** every case below ran on a standard Blu-ray
+(`CINFO:1,6209,"Blu-ray disc"`). Do not read these results as UHD verification.
+
+UHD has since been verified for two operations only: `info` and a one-title
+`mkv`, on two UHD discs, on the flashed BU40N (1.03) and a WH16NS60 (1.02),
+2026-09-25. Both need `MSG:1011` (LibreDrive) to be present; a UHD disc
+reports the same `CINFO:1,6209,"Blu-ray disc"` as a standard one. The two
+copies ran at the same time, each under the `bwrap` drive sandbox, without
+interfering. `backup` and the error cases have not been re-run on UHD. See
+"UHD verified end to end" in `README.md`.
+
 ---
 
 ## 0. System prerequisites
@@ -96,7 +107,7 @@ Neither form stops MakeMKV opening every other drive first — see
 
 ```
 MSG:1005,...          ← engine started (always first)
-MSG:3007,...          ← direct disc access mode (LibreDrive)
+MSG:3007,...          ← direct disc access mode (not LibreDrive; see message-codes.md)
 MSG:5085,...          ← content hash table loaded
 MSG:3025,...          ← sub-120s clips skipped (info only)
 MSG:3307,...          ← titles discovered
