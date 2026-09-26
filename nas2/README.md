@@ -7,6 +7,7 @@ under this directory mirror where each file lives on nas2:
 |---|---|---|
 | `root/scripts/media-backup.sh` | `/root/scripts/media-backup.sh` | 04:00 mirror of each MediaN drive to its plugged-in BackupN/BackupNA/BackupNB drives |
 | `root/scripts/jellyfin-backup.sh` | `/root/scripts/jellyfin-backup.sh` | 03:30 copy of Jellyfin's config and cache onto every Media drive |
+| `root/scripts/README.md` | `/root/scripts/README.md` | pointer back to this repo for anyone looking on nas2 |
 | `etc/cron.d/media-backup` | `/etc/cron.d/media-backup` | schedule for the mirror; no redirect, because the script writes its own log |
 | `etc/cron.d/jellyfin-backup` | `/etc/cron.d/jellyfin-backup` | schedule for the Jellyfin copy |
 | `etc/logrotate.d/media-backup` | `/etc/logrotate.d/media-backup` | weekly rotation of both logs, eight kept |
