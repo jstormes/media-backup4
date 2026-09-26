@@ -1,0 +1,9 @@
+# Install as /etc/logrotate.d/media-backup
+/var/log/media-backup.log /var/log/jellyfin-backup.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+}

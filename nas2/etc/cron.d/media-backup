@@ -1,0 +1,2 @@
+# Media backup - runs daily at 4:00 AM CST
+0 4 * * * root /root/scripts/media-backup.sh
