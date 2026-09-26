@@ -113,7 +113,7 @@ For every backup drive that is plugged in, it:
 rsync -rtLv --stats --delete --modify-window=1 --max-delete=500 \
   --backup --backup-dir=.backup-deleted/<run date and time> \
   --exclude='$RECYCLE.BIN' --exclude='System Volume Information' \
-  --exclude=/.backup-deleted \
+  --exclude=/.backup-deleted --exclude=/.publish-tmp \
   /srv/dev-disk-by-uuid-0A63-B16B/ /mnt/backup_temp/Backup2A/
 ```
 
@@ -172,6 +172,30 @@ the run if any file differs. It takes hours per drive on these disks, which is
 why it is not the default -- size and modification time are the everyday check.
 It is worth running once after a drive's first copy, and after anything that
 casts doubt on a drive.
+
+### Publishing while a backup runs
+
+This is normal: titles keep being published to Media2 while a backup is
+copying it. The publish skill writes every file into `.publish-tmp/` at the
+drive root and renames it into its title folder only when it is complete. The
+backup excludes `/.publish-tmp`, so it sees each title either whole or not at
+all, never half-written.
+
+What overlap still costs is timing: a title that appears after the backup has
+already scanned its folder is left for the next run. **A title is on a backup
+only once a run that started after its publish finished has completed.** Leave
+the drive docked for one more run after a publishing session.
+
+Before 2026-09-26 the publish wrote straight into the final file
+(`--append-verify`). A backup running at the same time copied titles partly,
+and the next run moved each partial copy into `.backup-deleted/`, where it
+used space for 90 days. Partial copies from the first Backup2A run, which
+overlapped publishes made the old way, are there for that reason and can be
+deleted by hand.
+
+Other writers to Media2, such as the UHD test setup, don't go through
+`.publish-tmp`. If they write files in place, a backup running alongside
+them can still copy a partial file.
 
 ## What this protects against, and what it does not
 

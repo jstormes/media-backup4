@@ -545,21 +545,24 @@ on a 7.3T volume uses large clusters, so the apparent sizes understate the
 cost, and the margin check above starts refusing transfers that would in fact
 have fitted. Media2 was empty and the same size.
 
-**Watch the mirror, not just the volume.** Backup1 is a cold mirror of Media1,
-sized 7.28T against Media1's 7.28T. It does not cover Media2, so a title
-published now has the server copy and the disc, and no third copy -- which
-matters at step 10, where reclaiming the archive deletes the last local copy.
-Say so in the report rather than leaving the operator to infer it. See
-`docs/jellyfin/backup-strategy.md`, which still describes Media1 as the
-publish target and has not been revised for the move.
+**Watch the mirror, not just the volume.** Each Media drive is to have two
+cold backup drives. For Media2 that is Backup2A (first copy started
+2026-09-26) and a Backup2B not yet made. The backups live in storage and
+are refreshed only when docked, so **a title published now is on no backup
+until a backup run that starts after the publish finishes** -- which matters
+at step 9, where reclaiming the archive deletes the last local copy. Say
+so in the report rather than leaving the operator to infer it. See
+`docs/jellyfin/backup-strategy.md`.
 
 ### The transfer itself
 
 **The library filesystem is exFAT.** That drives every flag here:
 
 ```bash
+TMP="$PUBLISH_ROOT/.publish-tmp"
+ssh -n "$PUBLISH_HOST" "mkdir -p $(printf '%q' "$TMP")"
 rsync -rltDvh --no-perms --no-owner --no-group --modify-window=1 \
-      --partial --append-verify \
+      --temp-dir="$TMP" --partial-dir="$TMP" \
       "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/"
 ```
 
@@ -570,8 +573,29 @@ rsync -rltDvh --no-perms --no-owner --no-group --modify-window=1 \
   `--chmod` would be too.
 - `--modify-window=1` because FAT-family timestamps are coarse. Without it a
   re-run can decide every file changed and send 10 GB again.
-- `--partial --append-verify` to resume a part-sent 20 GB title instead of
-  restarting it.
+- `--temp-dir` and `--partial-dir`, both `.publish-tmp` at the drive root, so
+  **a title appears in the library only once it is complete.** rsync writes
+  each file there and renames it into its title folder when it finishes -- a
+  rename on the same drive, so instant and no extra space. An interrupted
+  file stays in `.publish-tmp`, and a re-run uses it as the basis and sends
+  only the rest, so a part-sent 20 GB title still resumes rather than
+  restarts. Tested 2026-09-26: a 60 MB file interrupted at 21.8 MB resumed
+  with 21.8 MB matched and 41 MB sent, byte-identical.
+- Why not `--partial --append-verify`, which this used before 2026-09-26: it
+  writes straight into the final file, so a half-sent title sits in the
+  library under its real name. The nightly backup (`media-backup.sh`)
+  cannot tell it from a finished one and copies it partly; the next run
+  replaces it and the partial copy is kept for 90 days in
+  `.backup-deleted/` on the backup drive. Publishing and backups overlap
+  often, so that filled backup drives with dead copies.
+- The `mkdir` is required: rsync refuses a missing `--temp-dir` outright
+  (code 1, nothing sent) rather than falling back to writing in place.
+  `media-backup.sh` excludes `/.publish-tmp`, so in-flight data never
+  reaches a backup drive.
+- Basenames can repeat across titles (`extras/Trailer.mkv`), and the partial
+  dir is flat. A clash only costs efficiency: an interrupted file may resume
+  against the wrong basis and resend more. rsync's own checksum still
+  guarantees the result, and step 9 proves it.
 
 Run it with `--dry-run` first and read the file list.
 
@@ -607,6 +631,11 @@ Check every one of these before reporting success:
 - Every file name begins with its parent folder's name.
 - The archive is unchanged. Fingerprint it before staging and compare after:
   `find /srv/media-backup/finished -type f -printf '%i %s %p\n' | sort`.
+- After a transfer, `$PUBLISH_ROOT/.publish-tmp` on the server is empty
+  (`ssh -n nas2 "find …/.publish-tmp -type f"` prints nothing). Anything left
+  there is a file that never finished, and its title is not in the library
+  complete. Re-run the transfer; don't delete it, since that's what the
+  resume uses.
 - After a transfer, the remote size matches: `ssh nas2 find … -printf '%s %P\n'`
   against the same for the staging area. Do not trust rsync's exit code alone
   on exFAT, where it cannot set the metadata it would normally verify. Compare

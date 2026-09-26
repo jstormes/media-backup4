@@ -38,6 +38,10 @@ RSYNC_EXCLUDES=(
     --exclude='$RECYCLE.BIN'
     --exclude='System Volume Information'
     --exclude="/$DELETED_DIR"
+    # In-flight publishes: files only leave here, renamed into their title
+    # folder, once complete. Copying them would put partial titles on the
+    # backup and, on the next run, into .backup-deleted.
+    --exclude=/.publish-tmp
 )
 
 VERIFY=0

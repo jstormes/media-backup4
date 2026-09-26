@@ -357,5 +357,7 @@ can see it.
 
 So: rip local, then push. `rsync` over SSH rather than a mount, because a
 failed transfer is then an exit code to retry rather than a wedged job, and
-`--partial --append-verify` resumes a 40 GB title instead of restarting it.
+`--temp-dir`/`--partial-dir` resume a 40 GB title instead of restarting it,
+while keeping it out of the library until it is complete (see the publish
+skill, step 7).
 The step is idempotent, so re-running after any failure is safe.
