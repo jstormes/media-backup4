@@ -95,8 +95,9 @@ content has accumulated since each copy's last completed run".
 The script is at `/root/scripts/media-backup.sh` (root-only; the log is
 world-readable and is the practical way to see what it did). The version
 before the 2026-09-26 rewrite is kept beside it as
-`media-backup.sh.old-2026-09-26`. For every backup drive that is plugged in,
-it:
+`media-backup.sh.old-2026-09-26`. Copies of both scripts, their cron entries
+and the logrotate rule are in [`nas2/`](../../nas2/README.md) in this repo.
+For every backup drive that is plugged in, it:
 
 1. finds the drive by exact label (`^Backup[0-9]+[A-Z]?$`) and its Media drive
    by number, refusing a label found on more than one device
