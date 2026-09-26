@@ -72,6 +72,7 @@ stop. Those are the `PRGT`/`PRGC` progress-title forms; the `MSG` forms are
 | Code | English |
 |---|---|
 | `1005` | `%1 started` |
+| `1011` | `Using LibreDrive mode (v06.3 id=…)` — **the** LibreDrive indicator: AACS 2.0 (UHD) will decrypt |
 | `3007` | `Using direct disc access mode` — **not** a LibreDrive indicator; see `3346` |
 | `3025` | `Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped` |
 | `5018` | `Scanning CD-ROM devices` |
