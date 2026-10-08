@@ -612,9 +612,6 @@ find "$STAGE" -mindepth 1 -printf '%P\n' | grep -E '["*:<>?\\|]'
 There is no 4 GB limit: this is exFAT, not FAT32. A 26 GB title already sits
 in the library.
 
-After the transfer, tell the operator to rescan the Jellyfin library -- new
-files are not noticed until it does.
-
 ## 8. Verify, then report
 
 Check every one of these before reporting success:
