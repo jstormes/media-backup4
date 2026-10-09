@@ -66,7 +66,10 @@ finishing is an atomic rename.
 
 Publish a disc when `state` is `done`. Report and skip anything else — a disc
 reading `Needs you` is waiting on a person to rip it by hand, and staging what
-it did produce would file a fragment as if it were the film.
+it did produce would file a fragment as if it were the film. `incomplete`
+means titles were lost in the copy; `state_detail` names them, and flags the
+longest. Discs finished before 2026-09-28 can read `done` with the same
+fault, which is why step 2's check for an empty `output_file` stays.
 
 **Skip any collection holding a `.published` marker.** Step 9 writes one after
 reclaiming the media, so the directory still carries `collection.json` and the
@@ -235,6 +238,37 @@ Read the shape of what is left:
 `media_backup.makemkv.selection` has `relationship()` and `shared_ratio()` —
 use them rather than eyeballing durations, and remember they are only
 meaningful on a Blu-ray.
+
+**Episodic content is published as individual episodes, never as the
+compilation.** The operator's standing rule, set 2026-10-06. A disc of
+episodes goes to `Shows/<Series (Year) [imdbid-…]>/Season NN/SxxEyy.mkv`, one
+file per episode, and its play-all stays in the archive -- even when the disc
+is sold as one title and IMDb lists that title as a `video` of its own.
+Spider-Man: The Venom Saga, The Ultimate Villain Showdown and Daredevil vs.
+Spider-Man are each 4-5 episodes of the 1994 series behind a play-all;
+Alvin's Thanksgiving Celebration is three 1983-series episodes and a special.
+Publishing the compilation only applies when the episodes cannot be split out
+or cannot be identified, and then say why in the report.
+
+Two things make these discs easy to get wrong:
+
+- **`kind` is often `movie`** on them, because the operator named the product,
+  not its contents, and on a DVD `classify()` cannot see the play-all (cell
+  ranges are local to each title). Check the arithmetic yourself: the longest
+  title's runtime equal to the sum of three to five ~20-minute siblings is a
+  play-all, whatever the verdict says.
+- **The episode is identified by its title card, not by its runtime.** The
+  series' runtimes in `title_episode` are all 20-22 minutes and align with
+  nothing. Tile frames from the first few minutes of each title (`ffmpeg
+  -vf "fps=1/10,scale=192:144,tile=6x6"`) and read the card -- there is no
+  OCR on this box. Some discs put a host intro in front of each episode
+  (the Ultimate Villain Showdown episodes open with a minute of Stan Lee), so
+  the card can sit well past the opening theme.
+
+Extras on such a disc -- host interviews, bonus cartoons from other series --
+go in the show's `extras/`. A special with its own IMDb title rather than an
+episode number (A Chipmunk Celebration, `tt1454056`, a `tvShort`) goes under
+`Movies/` with its own tag rather than guessing a Season 00 number.
 
 **Episode order is not in MakeMKV's data.** Its title order usually follows
 disc order, which usually follows broadcast order, and "usually" is not good
