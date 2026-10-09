@@ -537,15 +537,40 @@ class JobManager:
         if event.titles:
             job.disc.titles = list(event.titles)
 
-        good = self._is_good(verdict)
         detail = verdict.reason if verdict else "the job ended without a verdict"
+        if not self._is_good(verdict):
+            state = model.FAILED
+        elif verdict.outcome == outcome.PARTIAL:
+            # Kept and ejected like a good copy, but not DONE: the judge
+            # cannot tell a lost extra from a lost feature, so the operator
+            # is told which titles went and has to confirm before finishing.
+            state = model.INCOMPLETE
+            detail = self._incomplete_detail(job.disc, detail)
+        else:
+            state = model.DONE
         logger.info("job %s finished: %s (%s)",
                     job.job_id, attempt.outcome, detail)
-        self._retire(job, model.DONE if good else model.FAILED, detail)
+        self._retire(job, state, detail)
 
     @staticmethod
     def _is_good(verdict) -> bool:
         return bool(verdict is not None and verdict.is_good)
+
+    @staticmethod
+    def _incomplete_detail(disc: model.Disc, reason: str) -> str:
+        """The verdict's reason, plus which titles were lost.
+
+        Naming the longest is the point: "1 did not" reads the same whether
+        it was a trailer or the film.
+        """
+        unsaved = disc.unsaved_titles
+        if not unsaved:
+            return reason
+        longest = max(t.seconds for t in disc.titles)
+        names = [f"title {t.index} ({t.duration}"
+                 + (", the longest on the disc)" if t.seconds == longest else ")")
+                 for t in unsaved]
+        return f"{reason}: not saved: {', '.join(names)}"
 
     # -- state changes ------------------------------------------------------
 

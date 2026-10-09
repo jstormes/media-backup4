@@ -195,6 +195,7 @@ ATTR_DURATION = 9
 ATTR_SIZE_HUMAN = 10       # "29.3 GB"
 ATTR_SIZE_BYTES = 11
 ATTR_SOURCE_FILE = 16      # "00001.mpls"; DVDs do not emit this
+ATTR_ORIGINAL_TITLE = 24   # the disc's own title number, "03"; DVDs only
 ATTR_SEGMENTS_COUNT = 25
 ATTR_SEGMENTS_MAP = 26     # "123,141,125,..." -- the clip list behind a title
 ATTR_OUTPUT_FILE = 27      # suggested only; the _tNN moves with the filter

@@ -63,6 +63,18 @@ class TestDisc(unittest.TestCase):
         self.assertTrue(disc(model.DONE).is_good)
         self.assertTrue(disc(model.FAILED).is_terminal)
         self.assertFalse(disc(model.FAILED).is_good)
+        self.assertTrue(disc(model.INCOMPLETE).is_terminal)
+        self.assertFalse(disc(model.INCOMPLETE).is_good)
+
+    def test_unsaved_titles_are_those_with_a_duration_and_no_file(self):
+        """Juno, 2026-09-28: 14 of 15 saved, and the one lost was the film."""
+        d = Disc(titles=[
+            Title(index=0, duration="1:35:44", output_file=""),
+            Title(index=1, duration="0:04:51", output_file="title_t01.mkv"),
+            Title(index=2, duration="", output_file=""),
+        ])
+        self.assertEqual([t.index for t in d.unsaved_titles], [0],
+                         "a title with no duration was never attempted")
 
     def test_pending_is_neither_active_nor_terminal(self):
         """A disc waiting for the operator to press Start is neither."""
@@ -144,6 +156,18 @@ class TestCompleteness(unittest.TestCase):
         c = Collection(discs=[disc(model.DONE), disc(model.FAILED, ordinal=2, label="D2")])
         self.assertFalse(c.is_complete)
         self.assertTrue(any("Not backed up: D2" in w for w in c.finish_warnings()))
+
+    def test_an_incomplete_disc_is_warned_about_by_name_and_reason(self):
+        """A kept copy with titles missing must not finish silently."""
+        d = Disc(label="JUNO", state=model.INCOMPLETE,
+                 state_detail="14 of 15 title(s) saved; 1 did not")
+        c = Collection(discs=[d])
+        self.assertFalse(c.is_complete)
+        warnings = c.finish_warnings()
+        self.assertIn("Incomplete: JUNO — 14 of 15 title(s) saved; 1 did not",
+                      warnings)
+        self.assertFalse(any("Not backed up" in w for w in warnings),
+                         "it was backed up, partly; say which")
 
     def test_active_job_is_warned_about(self):
         c = Collection(discs=[disc(model.COPYING, label="D1")])

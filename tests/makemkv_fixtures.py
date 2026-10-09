@@ -207,6 +207,48 @@ DVD_SCAN_NO_CINFO = "\n".join(
     line for line in DVD_SCAN.splitlines() if not line.startswith("CINFO:"))
 
 
+# --- VERBATIM 3015, makemkvcon info, 2026-10-06 ----------------------------
+# "The Green Mile" in a Pioneer BDR-212D. A read error at the same offset on
+# every scan, then MakeMKV drops the 3:08:28 film from the title list:
+# "skipped due to navigation error". The two lines are verbatim from that
+# attempt's log; the rest is DVD_SCAN, whose four titles stand in for the two
+# extras that were saved. Every listed title saves, and the film is still gone.
+GREEN_MILE_READ_ERROR = (
+    'MSG:2003,0,3,"Error \'Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR\''
+    ' occurred while reading \'BD-RE PIONEER BD-RW   BDR-212D 1.02 BFDL047551WL\''
+    ' at offset \'2641119232\'","Error \'%1\' occurred while reading \'%2\' at'
+    ' offset \'%3\'","Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR",'
+    '"BD-RE PIONEER BD-RW   BDR-212D 1.02 BFDL047551WL","2641119232"')
+GREEN_MILE_SKIPPED = (
+    'MSG:3015,0,2,"Title #1 (3:08:28) was skipped due to navigation error",'
+    '"Title #%1 (%2) was skipped due to navigation error","1","3:08:28"')
+SKIPPED_TITLE_SCAN = DVD_SCAN.replace(
+    "TCOUNT:4", GREEN_MILE_READ_ERROR + "\n" + GREEN_MILE_SKIPPED + "\nTCOUNT:4", 1)
+
+# --- 3028 then silence, makemkvcon info, 2026-10-07 ------------------------
+# "Fantastic Four" (FANTASTIC_FOUR_169) in an LG WH16NS60. The scan announced
+# the film -- the first line below is verbatim -- and the final title list
+# then held thirteen extras and no film, with no 3015 to say so. Here the
+# announcements and attribute-24 rows are laid over DVD_SCAN's four titles:
+# disc titles 2-5 are announced and listed, disc title 1 is announced only.
+FANTASTIC_FOUR_ADDED = (
+    'MSG:3028,0,3,"Title #1 was added (46 cell(s), 1:45:24)",'
+    '"Title #%1 was added (%2 cell(s), %3)","1","46","1:45:24"')
+
+
+def _announced(number, cells, runtime):
+    return (f'MSG:3028,0,3,"Title #{number} was added ({cells} cell(s), {runtime})",'
+            f'"Title #%1 was added (%2 cell(s), %3)","{number}","{cells}","{runtime}"')
+
+
+DROPPED_TITLE_SCAN = DVD_SCAN.replace("TCOUNT:4", "\n".join([
+    FANTASTIC_FOUR_ADDED,
+    _announced(2, 30, "1:42:39"), _announced(3, 1, "0:02:32"),
+    _announced(4, 1, "0:02:32"), _announced(5, 1, "0:02:32"),
+    "TCOUNT:4"]), 1) + "\n".join([
+    'TINFO:0,24,0,"02"', 'TINFO:1,24,0,"03"',
+    'TINFO:2,24,0,"04"', 'TINFO:3,24,0,"05"']) + "\n"
+
 # --- VERBATIM CAPTURE: makemkvcon info, 2026-09-14 -------------------------
 # "Taken 2" in a Pioneer BDR-212D. The disc is unreadable at the start of ten
 # .m2ts streams, and MakeMKV retries each forever: 425 of these in the hour

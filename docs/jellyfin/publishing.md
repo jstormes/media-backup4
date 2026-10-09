@@ -46,7 +46,7 @@ matter here:
 | `kind` | What the operator says it holds: `movie`, `movies`, `special`, `series`, or empty for "not sure". Pass it to `selection.classify()`; it decides whether a play-all is expected and whether equal runtimes are normal. |
 | `discs[]` | One entry per physical disc, in `ordinal` order. |
 | `discs[].makemkv_disc_name` | MakeMKV's name for the disc -- "Fresh Horses" where the volume label says `DVD_VIDEO`. The best name available. |
-| `discs[].state` | Only `done` was backed up. `failed`, `abandoned` and anything else must not be published. |
+| `discs[].state` | Only `done` was backed up. `incomplete`, `failed`, `abandoned` and anything else must not be published. |
 | `discs[].media` | `optical_dvd`, `optical_bd` or `optical_bd_r`. **This is what says whether clip lists mean anything across titles** -- pass `media.startswith("optical_bd")` as `classify`'s `clips_global`. Do not infer it from the clip lists; measured wrong on one disc in 161. |
 | `discs[].titles[]` | The titles the scan found, feature and extras alike. |
 | `titles[].output_file` | **The file on disk**, reconciled after the run. This is the link from metadata to bytes; do not reconstruct it from the title index. |
@@ -188,7 +188,8 @@ one.
 
 **Publish only `done` discs.** A disc that reads `Needs you` is waiting on a
 person to rip it by hand; publishing what it did produce would file a fragment
-as if it were the film.
+as if it were the film. An `incomplete` disc lost titles in the copy, and its
+`state_detail` names them -- it may be missing the film itself.
 
 **Refuse to publish an incomplete set.** If `expected_disc_count` is set and
 fewer discs are `done`, stop and say so. `Collection.finish_warnings()` already

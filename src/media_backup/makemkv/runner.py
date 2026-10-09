@@ -33,7 +33,7 @@ from . import command, inspect as layouts, isolation, messages, selection
 from .enumeration import DriveIndex, Resolution, parse_drives, resolve
 from .outcome import BackupObservation, OutcomePolicy, Verdict, judge
 from .records import (ATTR_CHAPTER_COUNT, ATTR_COMMENT, ATTR_DURATION,
-                      ATTR_NAME, ATTR_OUTPUT_FILE, ATTR_SEGMENTS_MAP,
+                      ATTR_NAME, ATTR_ORIGINAL_TITLE, ATTR_OUTPUT_FILE, ATTR_SEGMENTS_MAP,
                       ATTR_SIZE_BYTES, ATTR_SOURCE_FILE, ATTR_TYPE,
                       Cinfo, Msg, Prgc, Prgt, Prgv, Sinfo, Tcount,
                       Tinfo, parse_line)
@@ -73,6 +73,62 @@ def _read_counts(record: Msg, obs: BackupObservation) -> None:
     elif record.code in (messages.MKV_COMPLETE_PARTIAL, messages.MKV_SAVED_PARTIAL):
         obs.titles_saved = number(0)
         obs.titles_failed = number(1)
+
+
+#: A title announced and then missing from the list is only reported as lost
+#: if it was at least this long. Measured 2026-10-07 across 260 good DVD
+#: scans: the only announced-then-unlisted titles with no same-length twin on
+#: the list were short clips of 2-6 minutes. A lost film or a lost 22-minute
+#: episode is far above this; a lost short extra goes unreported.
+DROPPED_TITLE_MIN_S = 600
+
+#: How close a listed title's runtime must be to count as the dropped one's
+#: surviving twin -- MakeMKV folds duplicates away and keeps one.
+DROPPED_TITLE_TWIN_S = 2
+
+
+def _seconds(clock: str) -> int:
+    total = 0
+    for part in clock.split(":"):
+        try:
+            total = total * 60 + int(part)
+        except ValueError:
+            return 0
+    return total
+
+
+def dropped_titles(added: dict[str, str], listed: dict[str, str]) -> list[str]:
+    """Titles the scan announced and then lost without saying so. Pure.
+
+    ``added`` maps the disc's title number to the runtime ``3028`` gave it;
+    ``listed`` does the same for the final list, read from ``TINFO`` attribute
+    24. Announced-but-unlisted is normal on its own: on good discs MakeMKV
+    folds away duplicates and angle variants ("Title #6/2") after announcing
+    them. What separates a lost title is that nothing on the list has its
+    runtime, and that it is long enough to matter. See DROPPED_TITLE_MIN_S.
+
+    Returns nothing when the scan carried no attribute 24 -- Blu-ray scans,
+    and older captures -- because there is then nothing to compare against.
+    """
+    if not listed:
+        return []
+    kept = [_seconds(d) for d in listed.values()]
+    lost = []
+    for number, runtime in added.items():
+        if "/" in number or number in listed:
+            continue
+        seconds = _seconds(runtime)
+        if seconds < DROPPED_TITLE_MIN_S:
+            continue
+        if any(abs(seconds - k) <= DROPPED_TITLE_TWIN_S for k in kept):
+            continue
+        lost.append(f"disc title #{number} ({runtime}), announced then dropped")
+    return lost
+
+
+def _title_number(raw: str) -> str:
+    """"03" and "3" are the same title; "06/2" is an angle of title 6."""
+    return "/".join(part.lstrip("0") or "0" for part in raw.split("/"))
 
 
 class _Aborted(Exception):
@@ -232,6 +288,8 @@ class BackupRunner:
         #: What the probes said, tallied the way the copy tallies its own.
         #: See _note_probe_message.
         self._probe_codes: dict[int, int] = {}
+        #: Titles the scan dropped as unreadable (MSG:3015), for the verdict.
+        self._skipped: list[str] = []
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -399,6 +457,7 @@ class BackupRunner:
         obs.titles_expected = len(chosen.titles)
         obs.expected_bytes = selection.expected_bytes(chosen)
         obs.files_written = layouts.count_mkv(req.dest)
+        obs.titles_skipped = list(self._skipped)
         self._match_output(chosen, obs)
         verdict = judge(obs, self._policy)
 
@@ -466,8 +525,16 @@ class BackupRunner:
         argv = command.info_argv(self.request.cfg, index, self.request.device)
         current: dict[int, model.Title] = {}
         streams: dict[int, set[int]] = {}
+        announced: dict[str, str] = {}
+        original: dict[int, str] = {}
         for line in self._run_to_completion(argv, "disc scan"):
             record = parse_line(line)
+            if isinstance(record, Msg):
+                if record.code == messages.TITLE_SKIPPED:
+                    self._note_skipped(record)
+                elif record.code == messages.TITLE_ADDED and len(record.params) >= 3:
+                    announced[_title_number(record.params[0])] = record.params[2]
+                continue
             if isinstance(record, Sinfo):
                 streams.setdefault(record.title, set()).add(record.stream)
                 continue
@@ -502,6 +569,13 @@ class BackupRunner:
                     title.chapters = int(record.value)
                 except ValueError:
                     pass
+            elif record.id == ATTR_ORIGINAL_TITLE:
+                original[record.title] = _title_number(record.value)
+        listed = {number: current[index_].duration
+                  for index_, number in original.items() if index_ in current}
+        for name in dropped_titles(announced, listed):
+            if name not in self._skipped:
+                self._skipped.append(name)
         for index_, title in current.items():
             title.streams = len(streams.get(index_, ()))
         self._titles = [current[k] for k in sorted(current)]
@@ -518,6 +592,19 @@ class BackupRunner:
             self.request.job_id, events.IDENTIFIED,
             disc_name=self._disc_name, disc_type=self._disc_type,
             titles=tuple(self._titles)))
+
+    def _note_skipped(self, record: Msg) -> None:
+        """Keep a title the scan could not read, as MakeMKV names it.
+
+        ``3015`` carries the disc's own title number and its runtime. The
+        number is the disc's, not MakeMKV's list index -- the title never got
+        a list index -- so it is written as such.
+        """
+        number = record.params[0] if len(record.params) > 0 else "?"
+        runtime = record.params[1] if len(record.params) > 1 else "?"
+        name = f"disc title #{number} ({runtime})"
+        if name not in self._skipped:
+            self._skipped.append(name)
 
     def _save_titles(self, index: int, chosen: selection.Selection) -> BackupObservation:
         """Save each chosen title, one makemkvcon run apiece.

@@ -82,6 +82,12 @@ class BackupObservation:
     #: recorded so the report can say the archive was touched after MakeMKV
     #: wrote it. See media_backup.tracks.
     tracks_reflagged: int = 0
+    #: Titles the scan lost because it could not read them -- skipped with
+    #: ``3015``, or announced and then silently dropped (runner.dropped_titles)
+    #: -- each as MakeMKV numbers and times it: ``"disc title #1 (3:08:28)"``.
+    #: They were never on the title list, so ``titles_expected`` cannot miss
+    #: them; this is the only place they show up.
+    titles_skipped: list[str] = field(default_factory=list)
     #: What the scan said the chosen titles weigh. The yardstick for the
     #: output, in place of the disc's size -- an MKV run leaves out menus and
     #: unwanted tracks by design, so the disc size says nothing about it.
@@ -145,6 +151,7 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
         "titles_short": obs.titles_short,
         "titles_unverified": obs.titles_unverified,
         "tracks_reflagged": obs.tracks_reflagged,
+        "titles_skipped": list(obs.titles_skipped),
     }
 
     # 1. Our own doing. Checked first so a cancel is never reported as a disc
@@ -180,7 +187,20 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
                        f"stopped at {obs.progress_ratio:.0%} of the disc",
                        detail)
 
-    # 6. Fewer titles than were asked for. Not a failure: one lost extra is
+    # 6. Titles the disc has but the scan could not read, and so never put on
+    #    the list. Ahead of the count below because that count cannot see
+    #    them: every title that was asked for can be present while the one
+    #    that matters was never asked for. Graded like a missing title, for
+    #    the same reason -- the skipped one may be an extra -- and named, with
+    #    MakeMKV's runtime, so a three-hour gap reads as the film.
+    if obs.titles_skipped:
+        return Verdict(PARTIAL,
+                       f"MakeMKV skipped or dropped "
+                       f"{len(obs.titles_skipped)} title(s) it could not "
+                       f"read during the disc scan: "
+                       f"{', '.join(obs.titles_skipped)}", detail)
+
+    # 7. Fewer titles than were asked for. Not a failure: one lost extra is
     #    not the same news as a lost feature, and the operator decides which
     #    this was -- the titles are recorded on the attempt either way.
     missing = max(0, obs.titles_expected - obs.files_written)
@@ -195,7 +215,7 @@ def judge(obs: BackupObservation, policy: OutcomePolicy | None = None) -> Verdic
     #    early is short. Independent of everything MakeMKV printed, and
     #    unbothered by the container overhead that makes size a poor guide.
     #
-    #    Graded the same way step 6 grades a missing title, and for the same
+    #    Graded the same way step 7 grades a missing title, and for the same
     #    reason: one short extra is not the same news as a short feature, and
     #    a scan cannot tell which a title is. Every saved title coming up
     #    short is a broken copy and fails. Some of them coming up short is

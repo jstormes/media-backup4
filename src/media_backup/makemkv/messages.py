@@ -34,6 +34,18 @@ MKV_TITLE_FAILED = 5003      # "Failed to save title %1 to file %2"
 MKV_BAD_DIRECTORY = 5016     # "Directory %1 is invalid"
 MKV_DECODE_FAILED = 5043     # "Failed to decode AV data of title #%1..."
 TITLE_ADDED = 3028           # "Title #%1 was added (%2 cell(s), %3)"
+#: "Title #%1 (%2) was skipped due to navigation error". The scan drops the
+#: title before there is a title list, so nothing downstream counts it as
+#: lost -- every title on the list can be saved and the film still be gone.
+#: The Green Mile, 2026-10-06: a read error at the same offset on every scan,
+#: "Title #1 (3:08:28) was skipped", two extras saved, filed as done.
+TITLE_SKIPPED = 3015
+#: The other way a title is lost in the scan, with nothing said about it:
+#: announced with ``3028`` ("Title #%1 was added (%2 cell(s), %3)") and then
+#: absent from the final title list. Fantastic Four, 2026-10-07: 36 read
+#: errors, "Title #1 was added (46 cell(s), 1:45:24)", and a final list of
+#: thirteen extras. See runner.dropped_titles for how this is told apart from
+#: the duplicates and angles MakeMKV folds away on good discs.
 OP_COMPLETE = 5011           # "Operation successfully completed"
 
 

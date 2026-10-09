@@ -321,7 +321,8 @@ its place.
 
 ```
 pending ──▶ queued ──▶ resolving ──▶ scanning ──▶ copying ──▶ verifying ──▶ ejecting ──▶ done
-                            │            │           │            │
+                            │            │           │            │                  │
+                            │            │           │            │                  └──▶ incomplete
                             └────────────┴───────────┴────────────┴──────▶ failed
                                                                               │
    (operator gives up) ─────────────────────────────────────────────────▶ abandoned
@@ -329,8 +330,15 @@ pending ──▶ queued ──▶ resolving ──▶ scanning ──▶ copyin
 
 - **Active states:** `queued`, `resolving`, `scanning`, `copying`,
   `verifying`, `ejecting`. Anything in one of these at startup was interrupted.
-- **Terminal states:** `done`, `failed`, `abandoned`. `failed` is retryable;
-  `abandoned` is the operator's decision to stop.
+- **Terminal states:** `done`, `incomplete`, `failed`, `abandoned`. `failed`
+  is retryable; `abandoned` is the operator's decision to stop.
+- **`incomplete`** is a `partial` verdict (§10): a copy was kept and the disc
+  ejected, but some titles were not saved or run short. It is not good, so it
+  blocks `is_complete` and puts `Incomplete: <disc> — <reason>` in the finish
+  warnings, naming each lost title and flagging the longest. Retryable.
+  Juno, 2026-09-28, lost its feature to a read error, read `done` with its
+  fourteen extras, and finished without a warning; this state exists so that
+  cannot happen quietly again.
 
 ### Collection
 
@@ -340,7 +348,7 @@ pending ──▶ queued ──▶ resolving ──▶ scanning ──▶ copyin
 good, and — if `expected_disc_count` is set — exactly that many good.
 
 The operator may finish anyway. The system's job is to **enumerate the
-warnings** (still copying / not backed up / never started / count mismatch)
+warnings** (still copying / incomplete / not backed up / never started / count mismatch)
 and make them impossible to miss, not to forbid the action.
 
 ### Crash recovery
