@@ -1,2 +1,3 @@
 # Jellyfin backup - runs daily at 3:30 AM CST
-30 3 * * * root /root/scripts/jellyfin-backup.sh >> /var/log/jellyfin-backup.log 2>&1
+# Disabled 2026-09-26: to be folded into media-backup.sh after the first clean Backup2A run.
+#30 3 * * * root /root/scripts/jellyfin-backup.sh >> /var/log/jellyfin-backup.log 2>&1

@@ -94,12 +94,32 @@ def names_disagree(disc_name: str, expected_label: str) -> bool:
     comparison that already failed, so two discs that genuinely differ after a
     ``#`` still disagree: ``BOXSET#1`` against ``BOXSET#2`` strips to
     ``BOXSET``, which does not equal ``BOXSET#2``, and is refused.
+
+    MakeMKV also makes the name safe as a file name, and udisks2 does not.
+    Measured 2026-10-07: ``Monsters, Inc.`` reads as ``Monsters, Inc#7318``
+    (trailing dot dropped) and ``<THE_LAST_WITCH_HUNTER>`` as
+    ``_THE_LAST_WITCH_HUNTER_#7C26`` (``<`` and ``>`` become ``_``). The first
+    was refused twice, zero bytes read. :func:`_as_makemkv_names_it` applies
+    the same two rewrites to the udisks2 side -- only those two, so the
+    underscore and ``#`` cases above are decided exactly as before.
     """
     if not disc_name or not expected_label:
         return False
     if disc_name == expected_label:
         return False
-    return disc_name.split("#", 1)[0] != expected_label
+    undecorated = disc_name.split("#", 1)[0]
+    return undecorated not in (expected_label,
+                               _as_makemkv_names_it(expected_label))
+
+
+#: Characters MakeMKV replaces with ``_`` in a disc name: the ones a Windows
+#: file name cannot hold.
+_UNSAFE_IN_FILE_NAME = str.maketrans({c: "_" for c in '<>:"/\\|?*'})
+
+
+def _as_makemkv_names_it(label: str) -> str:
+    """A volume label rewritten the way MakeMKV rewrites it for a disc name."""
+    return label.translate(_UNSAFE_IN_FILE_NAME).rstrip(". ")
 
 
 def resolve(drives: Iterable[Drv], device: str, expected_label: str = "") -> Resolution:

@@ -69,7 +69,7 @@ log() {
 # A full first copy can outlast the 24h cron interval; never run twice at once.
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
-    log "Another media backup is still running. Exiting."
+    log "Another media backup, or the Jellyfin backup, is still running. Exiting."
     exit 0
 fi
 

@@ -20,7 +20,7 @@ from media_backup import events, model
 from media_backup.config import Config
 from media_backup.makemkv import isolation, outcome
 from media_backup.makemkv.enumeration import DriveIndex
-from media_backup.makemkv.runner import BackupRequest, BackupRunner
+from media_backup.makemkv.runner import BackupRequest, BackupRunner, dropped_titles
 
 from . import makemkv_fixtures as fx
 from .mkv_fixtures import write_mkv
@@ -936,6 +936,82 @@ class TestTitleSelection(RunnerTestCase):
 
         self.assertEqual(h.final.error_kind, model.ERR_NO_FEATURE)
         self.assertFalse(any("mkv" in a for a in h.argvs))
+
+
+class TestATitleTheScanCouldNotRead(RunnerTestCase):
+    """MSG:3015 drops a title before there is a list for it to be missing
+    from. The Green Mile lost its film that way and was filed as done."""
+
+    def run_skipped(self):
+        h = self.scripted(scan=fx.SKIPPED_TITLE_SCAN)
+        h.on_line = lambda proc, line: self.make_output()
+        self.run_job(h)
+        return h
+
+    def test_every_listed_title_saving_is_not_enough(self):
+        h = self.run_skipped()
+        self.assertEqual(h.final.verdict.outcome, outcome.PARTIAL)
+        self.assertIn("disc title #1 (3:08:28)", h.final.verdict.reason)
+
+    def test_the_skipped_title_reaches_the_observation(self):
+        h = self.run_skipped()
+        self.assertEqual(h.final.observation.titles_skipped,
+                         ["disc title #1 (3:08:28)"])
+
+    def test_the_titles_that_were_listed_are_still_all_saved(self):
+        """Partial, not failed: the copy that exists is kept and ejected."""
+        h = self.run_skipped()
+        self.assertEqual(len([a for a in h.argvs if "mkv" in a]), 4)
+        self.assertTrue(h.final.verdict.is_good)
+
+    def test_a_clean_scan_skips_nothing(self):
+        h = self.scripted()
+        h.on_line = lambda proc, line: self.make_output()
+        self.run_job(h)
+        self.assertEqual(h.final.observation.titles_skipped, [])
+        self.assertEqual(h.final.verdict.outcome, outcome.SUCCESS)
+
+
+class TestATitleTheScanAnnouncedAndDropped(RunnerTestCase):
+    """3028 then silence. Fantastic Four announced its film and listed only
+    extras; with no 3015 the skipped-title check alone could not see it."""
+
+    def test_the_dropped_film_makes_the_copy_partial(self):
+        h = self.scripted(scan=fx.DROPPED_TITLE_SCAN)
+        h.on_line = lambda proc, line: self.make_output()
+        self.run_job(h)
+        self.assertEqual(h.final.verdict.outcome, outcome.PARTIAL)
+        self.assertEqual(h.final.observation.titles_skipped,
+                         ["disc title #1 (1:45:24), announced then dropped"])
+        self.assertIn("1:45:24", h.final.verdict.reason)
+
+
+class TestDroppedTitles(unittest.TestCase):
+    """The rule itself, against the shapes measured on 260 good DVD scans."""
+
+    def test_a_long_title_with_no_twin_on_the_list_is_lost(self):
+        self.assertEqual(
+            dropped_titles({"1": "1:45:24", "3": "0:01:42"}, {"3": "0:01:42"}),
+            ["disc title #1 (1:45:24), announced then dropped"])
+
+    def test_a_folded_duplicate_leaves_a_twin_and_is_not_lost(self):
+        """Good discs announce duplicates and keep one copy."""
+        self.assertEqual(
+            dropped_titles({"1": "1:42:39", "2": "1:42:40"}, {"2": "1:42:40"}), [])
+
+    def test_angle_variants_are_not_lost(self):
+        """Princess and the Frog: 80/20 announced, 80 listed."""
+        self.assertEqual(
+            dropped_titles({"80": "1:36:55", "80/20": "0:20:00"},
+                           {"80": "1:36:55"}), [])
+
+    def test_a_short_clip_is_below_the_threshold(self):
+        """The 2-6 minute drops seen on good discs are not reported."""
+        self.assertEqual(dropped_titles({"15": "0:02:12"}, {"1": "1:30:00"}), [])
+
+    def test_no_attribute_24_means_nothing_to_compare(self):
+        """Blu-ray scans and older captures carry no original title number."""
+        self.assertEqual(dropped_titles({"1": "1:45:24"}, {}), [])
 
 
 class TestRobustness(RunnerTestCase):

@@ -417,6 +417,50 @@ class TestEventApplication(JobsTestCase):
                          "only 20% of the disc was written")
         self.assertEqual(self.disc.last_attempt.error_kind, model.ERR_COPY)
 
+    def finish_partial(self, reason, titles=()):
+        self.runner.emit(events.JobEvent(
+            self.job_id, events.FINISHED,
+            verdict=outcome.Verdict(outcome.PARTIAL, reason),
+            observation=outcome.BackupObservation(exit_code=0),
+            titles=tuple(titles)))
+
+    def test_a_partial_copy_is_kept_but_marked_incomplete(self):
+        """Juno, 2026-09-28: the feature failed on a read error, 14 extras
+        saved, and the disc read ``done`` -- so the collection finished
+        without a word and was nearly published as extras with no film."""
+        self.finish_partial("14 of 15 title(s) saved; 1 did not", titles=(
+            model.Title(index=0, duration="1:35:44", size_bytes=4_865_005_568),
+            model.Title(index=1, duration="0:04:51", size_bytes=160_000_000,
+                        output_file="title_t01.mkv"),
+        ))
+
+        reloaded = self.reload()
+        disc = reloaded.discs[0]
+        self.assertEqual(disc.state, model.INCOMPLETE)
+        self.assertFalse(disc.is_good)
+        self.assertEqual(disc.last_attempt.outcome, outcome.PARTIAL)
+        self.assertIn("14 of 15 title(s) saved; 1 did not", disc.state_detail)
+        self.assertIn("title 0 (1:35:44, the longest on the disc)",
+                      disc.state_detail)
+        self.assertTrue(any(w.startswith("Incomplete:")
+                            for w in reloaded.finish_warnings()))
+        self.assertEqual(self.manager.running_count, 0, "the slot is freed")
+
+    def test_short_titles_are_incomplete_too(self):
+        """The other PARTIAL: every title saved, some of them short."""
+        self.finish_partial(
+            "1 of 27 saved title(s) run short of what the disc says they are")
+        self.assertEqual(self.disc.state, model.INCOMPLETE)
+        self.assertEqual(
+            self.disc.state_detail,
+            "1 of 27 saved title(s) run short of what the disc says they are")
+
+    def test_an_incomplete_disc_can_be_retried(self):
+        self.finish_partial("1 of 2 title(s) saved; 1 did not")
+        self.manager.enqueue(self.collection, self.disc, self.dev)
+        self.assertTrue(self.disc.is_active)
+        self.assertEqual(len(self.runners), 2, "a second attempt started")
+
     def test_identification_names_the_disc_and_persists_it(self):
         """The row should stop saying DVD_VIDEO the moment the scan knows."""
         self.assertEqual(self.disc.display_name, fx.SR1_LABEL)

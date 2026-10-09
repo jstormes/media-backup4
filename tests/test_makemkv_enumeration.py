@@ -64,6 +64,25 @@ class TestResolve(unittest.TestCase):
         self.assertTrue(r, r.detail)
         self.assertEqual(r.index, 0)
 
+    def test_makemkv_file_name_rewrites_are_not_a_disagreement(self):
+        """MakeMKV makes the name file-safe; udisks2 reports it raw.
+
+        Both measured 2026-10-07. Monsters, Inc. was refused twice by the
+        plain comparison with zero bytes read.
+        """
+        for held, picked in (("Monsters, Inc#7318", "Monsters, Inc."),
+                             ("_THE_LAST_WITCH_HUNTER_#7C26",
+                              "<THE_LAST_WITCH_HUNTER>")):
+            with self.subTest(held=held, picked=picked):
+                drives = enum.parse_drives(
+                    [f'DRV:0,2,999,1,"drive","{held}","/dev/sr0"'])
+                r = enum.resolve(drives, "/dev/sr0", picked)
+                self.assertTrue(r, r.detail)
+
+    def test_file_name_rewrites_do_not_conflate_discs(self):
+        self.assertTrue(enum.names_disagree("Monsters, Inc#7318", "Monsters, Inc. 2"))
+        self.assertTrue(enum.names_disagree("_TFATF_TD_#01", "<TFATF>"))
+
     def test_underscore_suffix_is_still_a_different_disc(self):
         """Not a prefix match: these are real, distinct discs in this archive.
 

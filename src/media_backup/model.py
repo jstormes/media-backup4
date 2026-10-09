@@ -27,12 +27,17 @@ COPYING = "copying"        # makemkvcon backup is running
 VERIFYING = "verifying"    # process exited, judging the result
 EJECTING = "ejecting"      # good copy, ejecting the disc
 DONE = "done"              # terminal, good
+#: Terminal, kept, but not good: some titles were not saved or run short.
+#: Retryable. Not DONE because a lost extra and a lost feature read the same
+#: to the outcome judge -- Juno, 2026-09-28, lost its film to a read error
+#: and was filed as done with fourteen extras.
+INCOMPLETE = "incomplete"
 FAILED = "failed"          # terminal for this attempt; retryable
 ABANDONED = "abandoned"    # terminal, operator gave up
 
 #: States in which a job is live. Anything here at startup was interrupted.
 ACTIVE_STATES = frozenset({QUEUED, RESOLVING, SCANNING, COPYING, VERIFYING, EJECTING})
-TERMINAL_STATES = frozenset({DONE, FAILED, ABANDONED})
+TERMINAL_STATES = frozenset({DONE, INCOMPLETE, FAILED, ABANDONED})
 
 # -- collection states ------------------------------------------------------
 
@@ -263,6 +268,16 @@ class Disc:
         return max(self.titles, key=lambda t: t.size_bytes, default=None)
 
     @property
+    def unsaved_titles(self) -> list["Title"]:
+        """Titles the save pass was asked for that no file on disk became.
+
+        Every title with a duration is asked for -- see
+        :func:`makemkv.selection.choose` -- so one with a duration and no
+        ``output_file`` is one that was lost.
+        """
+        return [t for t in self.titles if t.seconds > 0 and not t.output_file]
+
+    @property
     def display_name(self) -> str:
         """What to call this disc on screen.
 
@@ -342,8 +357,11 @@ class Collection:
         active = [d.display_name for d in self.discs if d.is_active]
         if active:
             warnings.append("Still copying: " + ", ".join(active))
+        for d in self.discs:
+            if d.state == INCOMPLETE:
+                warnings.append(f"Incomplete: {d.display_name} — {d.state_detail}")
         bad = [d.display_name for d in self.discs
-               if d.is_terminal and not d.is_good]
+               if d.is_terminal and not d.is_good and d.state != INCOMPLETE]
         if bad:
             warnings.append("Not backed up: " + ", ".join(bad))
         waiting = [d.display_name for d in self.discs if d.state == PENDING]

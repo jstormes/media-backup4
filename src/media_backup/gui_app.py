@@ -44,6 +44,7 @@ STATE_TEXT = {
     model.VERIFYING: "Checking the copy",
     model.EJECTING: "Ejecting",
     model.DONE: "Backed up",
+    model.INCOMPLETE: "Incomplete",
     model.FAILED: "Failed",
     model.ABANDONED: "Given up",
 }
@@ -679,7 +680,7 @@ class MainWindow:
     def _tag_disc(self, disc: model.Disc) -> None:
         if disc.is_good:
             tag = "good"
-        elif needs_operator(disc):
+        elif needs_operator(disc) or disc.state == model.INCOMPLETE:
             tag = "attention"
         elif disc.state == model.FAILED:
             tag = "bad"
@@ -709,6 +710,9 @@ class MainWindow:
         # the operator holding a drive they have to open by hand, so offer it.
         model.FAILED: ("retry", "eject", "abandon"),
         model.ABANDONED: ("retry", "eject"),
+        # Kept, and ejected like a good copy, but titles were lost. The detail
+        # line names them; retrying files this copy aside and starts again.
+        model.INCOMPLETE: ("retry", "abandon"),
         model.DONE: (),
     }
 

@@ -1,6 +1,18 @@
 #!/bin/bash
 
 COMPOSE_FILE="/DockerComposeFiles/Jellyfin/Jellyfin.yml"
+LOCK_FILE="${LOCK_FILE:-/run/lock/media-backup.lock}"
+
+# Share media-backup.sh's lock. A first copy onto a new backup drive can run
+# past 03:30, and rewriting Backups/ under it would hand it a cache mid-rewrite.
+# If it holds the lock, skip tonight: Jellyfin keeps running, and the Media
+# drives keep the config from the last run. If the lock is free, hold it
+# until the copies are done, so a media backup cannot start mid-rewrite either.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Media backup is running (lock held). Skipping Jellyfin backup."
+    exit 0
+fi
 
 # 1. Stop Jellyfin container
 echo "Stopping Jellyfin..."
@@ -123,6 +135,10 @@ EOF
 done
 
 # 4. Restart Jellyfin
+# Release the lock before starting Jellyfin, so nothing started from here can
+# inherit it and keep holding it after this script exits.
+exec 9>&-
+
 echo "Starting Jellyfin..."
 docker compose -f "$COMPOSE_FILE" up -d
 

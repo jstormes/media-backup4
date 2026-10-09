@@ -151,6 +151,30 @@ class TestPartial(unittest.TestCase):
         self.assertIn("1 of 27", v.reason)
         self.assertIn("run short", v.reason)
 
+    def test_a_title_the_scan_could_not_read_is_not_all_titles_saved(self):
+        """The Green Mile, 2026-10-06.
+
+        MakeMKV skipped the 3:08:28 film during the scan (MSG:3015), so it was
+        never on the list. Both titles that were listed saved, every count
+        agreed, and the disc was filed as "all titles saved".
+        """
+        v = judge(obs(titles_expected=2, titles_saved=2, files_written=2,
+                      titles_skipped=["disc title #1 (3:08:28)"],
+                      message_codes={m.MKV_COMPLETE: 2,
+                                     m.TITLE_SKIPPED: 2}))
+        self.assertEqual(v.outcome, PARTIAL)
+        self.assertTrue(v.is_good, "the extras that did save are kept")
+        self.assertIn("3:08:28", v.reason, "the runtime says it was the film")
+        self.assertEqual(v.detail["titles_skipped"],
+                         ["disc title #1 (3:08:28)"])
+
+    def test_a_skipped_title_is_named_even_when_a_listed_one_is_missing(self):
+        """The count below cannot see a skipped title, so it goes first."""
+        v = judge(obs(titles_expected=3, files_written=2,
+                      titles_skipped=["disc title #1 (3:08:28)"]))
+        self.assertEqual(v.outcome, PARTIAL)
+        self.assertIn("skipped", v.reason)
+
 
 class TestCancelled(unittest.TestCase):
     def test_terminated_by_us(self):
