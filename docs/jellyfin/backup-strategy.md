@@ -130,9 +130,9 @@ no-drive nights.
 **Rsync's exit code is checked.** Before the rewrite, a pipe through `tee` and
 a trailing `|| true` meant every run logged "completed" whatever rsync did.
 Now a non-zero code is a failure, with two exceptions: code 24 (files vanished
-mid-copy) is a warning, because the 03:30 Jellyfin job rewrites
-`Backups/jellyfin_cache` while a long run is still going; the next run catches
-up. Code 25 means the deletion limit was hit -- see below.
+mid-copy) is a warning, because other writers (a publish, the UHD test setup)
+can remove files while a long run is going; the next run catches up. Code 25
+means the deletion limit was hit -- see below.
 
 The mount and the unmount are both the script's own doing, which is why the
 backup drives are absent from fstab. The script unmounts on exit even if it is
@@ -141,7 +141,18 @@ backup running, unmount it before unplugging.
 
 A `flock` on `/run/lock/media-backup.lock` means two runs never overlap. A
 first full copy can outlast the 24-hour cron interval; the next night's run
-logs `Another media backup is still running. Exiting.` and leaves it alone.
+logs `Another media backup, or the Jellyfin backup, is still running.
+Exiting.` and leaves it alone.
+
+The 03:30 Jellyfin job shares the same lock (since 2026-09-26). If a media
+backup holds it, the Jellyfin job logs `Media backup is running (lock held).
+Skipping Jellyfin backup.` to `/var/log/jellyfin-backup.log` and exits 0
+without stopping Jellyfin. If the lock is free, it holds it while it rewrites
+`Backups/`, so a media backup can't start in the middle. Before this, a long
+first copy running past 03:30 had `Backups/jellyfin_cache` rewritten under it.
+The Jellyfin job usually takes about 20 minutes, so a 04:00 media backup
+skipping because of it would be unusual. If it happens, that night's backup
+is skipped and the next night catches up.
 
 ### How long a run takes
 
@@ -259,3 +270,7 @@ metadata, plugins, images -- to `Backups/jellyfin_config/` and
 `docker-compose.yml` and `README.md` to each drive's root, and restarts it. The
 config is therefore in every Media drive's mirror. It is not backed up anywhere
 the library is not.
+
+On a night when a media backup is still running it skips (see the lock, above),
+so the copy on the Media drives is then a day older. The backup drives get a
+consistent snapshot instead of a half-rewritten one.
