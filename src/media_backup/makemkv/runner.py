@@ -151,11 +151,19 @@ class _Popen:
     go to the process *group*. Killing only the parent orphans children that
     keep the drive open, which shows up as a mysteriously busy drive several
     discs later.
+
+    stdin is /dev/null, never inherited. On some discs makemkvcon reads
+    stdin mid-scan, and a GUI started from a terminal hands it that tty: the
+    read blocks forever and the probe is shot as "said nothing for 5
+    minutes". Dharma & Greg S2, 2026-11-11 -- all three discs, three drives,
+    stuck at the same point of "Scanning contents"; the same command with
+    stdin at /dev/null scanned in under a minute.
     """
 
     def __init__(self, argv: list[str]) -> None:
         self._proc = subprocess.Popen(
             argv,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

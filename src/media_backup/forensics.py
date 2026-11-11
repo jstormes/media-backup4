@@ -278,7 +278,9 @@ def scan_disc(device: str, out: Path, cfg: Config | None = None) -> Path:
     with raw.open("w", errors="replace") as handle:
         handle.write("# " + " ".join(argv) + "\n")
         handle.flush()
-        subprocess.run(argv, stdout=handle, stderr=subprocess.STDOUT, check=False)
+        # stdin closed: makemkvcon can block reading it mid-scan (see runner._Popen).
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=handle,
+                       stderr=subprocess.STDOUT, check=False)
     return raw
 
 
