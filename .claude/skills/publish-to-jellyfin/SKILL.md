@@ -38,8 +38,34 @@ operator says otherwise. `config.validate` only cares about `collections/`,
 
 ```bash
 PUBLISH_HOST=nas2
-PUBLISH_ROOT=/srv/dev-disk-by-uuid-0A63-B16B   # the drive labelled Media2
+PUBLISH_ROOT=/srv/dev-disk-by-uuid-7BFE-62A5   # the drive labelled Media3
+PUBLISH_MOVIES="After Hours"                    # films go to $PUBLISH_ROOT/$PUBLISH_MOVIES
+PUBLISH_SHOWS="Shows"                           # episodes go to $PUBLISH_ROOT/$PUBLISH_SHOWS
 ```
+
+**Shows are published by default, alongside films, since 2026-10-29.** The
+operator said "we need to publish shows by default from now on". Every step
+from the dry run to the checksum covers `ready_to_add/Shows/` as well as
+`Movies/`; an episodic collection is never left staged because the commands
+only named the films tree. `/media3/Shows` exists and is already in
+Jellyfin's Shows library (with `/media/Shows` and `/media2/Shows`). The
+After Hours default is for films only -- a series never goes there.
+
+**Films go to `After Hours`, not `Movies`, since 2026-10-26.** The operator
+said "from this point on we need to put the collections in After Hours on
+media3 by default". It is a separate Jellyfin library at `/media3/After Hours`,
+laid out like `Movies/`: one `Title (Year) [imdbid-…]` folder per film. Stage
+under `ready_to_add/Movies/` as before; only the remote folder changes. Quote
+it everywhere, because the name has a space. Everything published before that
+date is in `/media3/Movies` and stays there. Episodic content goes to
+`$PUBLISH_ROOT/$PUBLISH_SHOWS`.
+
+**The operator can still send a film to `Movies` instead.** On 2026-10-29
+Obsession (1976) and Eye of the Devil (1966) were published to After Hours
+and then moved to `/media3/Movies` on request -- a `mv` within the drive,
+instant. Record the folder each film actually ended in, in its
+`.published` marker, and never re-run the whole-tree rsync after such a move:
+it would send the film back into After Hours.
 
 It was written out four separate times before 2026-09-18 -- twice as a
 `REMOTE` variable that meant two different things (one with `/Movies` on the
@@ -47,12 +73,27 @@ end, one without) and once hardcoded into the rsync that actually moves the
 bytes, so the dry run and the real run could have disagreed about where they
 were sending 20 GB. Changing drives meant finding all four.
 
-**Media1 (`/srv/dev-disk-by-uuid-78AA-077A`) is the old target.** Everything
-published before 2026-09-18 is there and stays there; nothing is written to it
-any more. A film that is in neither drive was never published. Both are
-mounted on `nas2` and both are in the Jellyfin container, as `/media` and
-`/media2` -- but a Jellyfin *library* covers a drive only if it has been added
-to one, so a title on Media2 is invisible until that is done.
+**Media3 has been the target since 2026-10-25.** The earlier targets were
+Media1 (`/srv/dev-disk-by-uuid-78AA-077A`), up to 2026-09-18, and Media2
+(`/srv/dev-disk-by-uuid-0A63-B16B`), from 2026-09-18 to 2026-10-25. What was
+published there stays there; nothing new is written to either. A film that is
+on none of the three was never published. All are mounted on `nas2` and are
+in the Jellyfin container as `/media`, `/media2` and `/media3` (Media4,
+`6FFE-3639`, is mounted as `/media4` but not yet used). A Jellyfin *library*
+covers a drive only once it has been added to one; `/media3/Movies` was added
+on 2026-10-25.
+
+**A new cut of a film that is already on an older drive goes in one folder.**
+Move the existing file into the new folder on Media3 with a version label,
+verify it by checksum, and only then remove the old folder (ask first, since
+that deletes from the older drive). Jellyfin's version menu needs both files
+in one folder; don't fall back on its manual "Merge versions". The Outsiders,
+2026-10-25: the theatrical cut came over from Media1 as `… - Theatrical Cut`.
+
+**The staging area can hold more than one collection.** Rsync the title
+folders you mean to send, not all of `Movies/`, and write the size comparison
+in step 8 per title folder. A file added on the server side, such as a moved
+older cut, shows up there as a difference that isn't a failure.
 
 Naming rules are in `docs/jellyfin/library-layout.md`; the contract this
 implements is `docs/jellyfin/publishing.md`. Read the layout doc before naming
@@ -518,9 +559,22 @@ STAGE=/srv/media-backup/ready_to_add
 # PUBLISH_HOST and PUBLISH_ROOT are defined once, at the top of this skill.
 MARGIN=$((10 * 1024 * 1024 * 1024))   # config.min_free_margin_bytes
 
-need=$(rsync -rltD --no-perms --no-owner --no-group --modify-window=1 \
-         --dry-run --stats "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/" \
-       | awk -F': *' '/Total transferred file size/ {gsub(/[^0-9]/,"",$NF); print $NF}')
+dry_need() {   # bytes rsync would send from one staged tree to its library folder
+    # Arguments through an array, never by position: see the dollar-digit
+    # note below.
+    local args=("$@"); local tree="${args[0]}" dest="${args[@]:1}"
+    [ -d "$STAGE/$tree" ] || { echo 0; return; }
+    rsync -rltD --no-perms --no-owner --no-group --modify-window=1 \
+          --dry-run --stats "$STAGE/$tree/" "$PUBLISH_HOST:$PUBLISH_ROOT/$dest/" \
+      | awk -F': *' '/Total transferred file size/ {gsub(/[^0-9]/,"",$NF); print $NF}'
+}
+need_movies=$(dry_need Movies "$PUBLISH_MOVIES")
+need_shows=$(dry_need Shows "$PUBLISH_SHOWS")
+# Both trees, every time: a staged series is part of the load even when the
+# films are what you came to publish. Either measurement empty means its
+# command broke, and the sum must not hide that.
+if [ -z "$need_movies" ] || [ -z "$need_shows" ]; then need=""
+else need=$((need_movies + need_shows)); fi
 # $NF, not field-by-number: the skill loader substitutes a dollar followed by
 # a digit with the invocation's arguments, so the field-two reference this
 # line used to have arrived as "Last" on 2026-09-25 and emptied $need. Never
@@ -568,6 +622,8 @@ Report it for the drive being published to, which is `$PUBLISH_ROOT` and
 nothing else -- the number for the drive that *used* to be the target is not
 the number that governs the next transfer.
 
+Measured 2026-10-25, the day the target moved to Media3: about 120G used of
+7.3T after the first four publishes. Media2 was then at 94% (503G free).
 Measured 2026-09-18, after the target moved to Media2: 122G used of 7.3T, 7.2T
 free, which is room for the foreseeable future. For scale, publishing four
 films took 69G. Say the figure out loud anyway; the point of the line is that
@@ -577,11 +633,12 @@ the trend is visible long before it is urgent.
 on 2026-09-14, and a volume that full stops being safe to publish onto: exFAT
 on a 7.3T volume uses large clusters, so the apparent sizes understate the
 cost, and the margin check above starts refusing transfers that would in fact
-have fitted. Media2 was empty and the same size.
+have fitted. Media2 was empty and the same size. Media2 reached the same
+point (94%, 503G free) by 2026-10-25, which is why the target moved again.
 
 **Watch the mirror, not just the volume.** Each Media drive is to have two
-cold backup drives. For Media2 that is Backup2A (first copy started
-2026-09-26) and a Backup2B not yet made. The backups live in storage and
+cold backup drives. For Media3 that is Backup3A (made 2026-10-25, first
+copy not yet run) and a Backup3B not yet made. The backups live in storage and
 are refreshed only when docked, so **a title published now is on no backup
 until a backup run that starts after the publish finishes** -- which matters
 at step 9, where reclaiming the archive deletes the last local copy. Say
@@ -592,13 +649,64 @@ so in the report rather than leaving the operator to infer it. See
 
 **The library filesystem is exFAT.** That drives every flag here:
 
+**A folder new to the library is uploaded outside it, then renamed in
+whole.** rsync creates a title's folders at the start of the transfer and
+fills them over the next half hour. Jellyfin's real-time monitor scans a
+folder as soon as it appears, so it sees an empty title folder, or one holding
+only `extras/`. It catalogues that as a plain *Folder*, not a Movie. When the
+film lands later it goes in as a child of that Folder, and the title shows up
+nested one level down in the library. Robin (1979), 2026-11-09: its 30 GB film
+took 35 minutes to arrive, and Jellyfin filed the folder as `Folder` with the
+Movie inside it, unlike the 41 films beside it. A later rescan does not
+re-class a folder, so prevent it rather than repair it.
+
+The unit is the **top-most folder that does not yet exist on the server**:
+- a film's title folder;
+- a new show's folder;
+- or a new `Season NN` inside a show already in the library.
+
+Upload it to `.publish-tmp/incoming/` on the same drive (already excluded from
+backups), then `mv` it into the library. The `mv` is a rename on the same
+drive, so it is instant and the library only ever sees the folder complete.
+
+Files going into a folder that **already exists**, such as a new extra in an
+existing `extras/`, go straight to their real path. `--temp-dir` already makes
+each file appear only when it is complete, and the folder is already
+classified correctly.
+
 ```bash
 TMP="$PUBLISH_ROOT/.publish-tmp"
-ssh -n "$PUBLISH_HOST" "mkdir -p $(printf '%q' "$TMP")"
-rsync -rltDvh --no-perms --no-owner --no-group --modify-window=1 \
-      --temp-dir="$TMP" --partial-dir="$TMP" \
-      "$STAGE/Movies/" "$PUBLISH_HOST:$PUBLISH_ROOT/Movies/"
+INCOMING="$TMP/incoming"
+RSYNC=(rsync -rltDh --no-perms --no-owner --no-group --modify-window=1
+       --temp-dir="$TMP" --partial-dir="$TMP" --info=progress2,name1)
+
+# publish_unit <staged folder> <library-relative destination folder>
+#   publish_unit "$STAGE/Movies/$F" "$PUBLISH_MOVIES/$F"
+#   publish_unit "$STAGE/Shows/$S/Season 07" "$PUBLISH_SHOWS/$S/Season 07"
+publish_unit() {
+    local src=$1 dest="$PUBLISH_ROOT/$2" in="$INCOMING/$2"
+    # Refuse an existing destination: mv into an existing folder nests the
+    # title inside it -- the very bug this avoids.
+    ssh -n "$PUBLISH_HOST" "test ! -e $(printf '%q' "$dest")" \
+        || { echo "already in the library: $dest -- send its new files directly"; return 1; }
+    ssh -n "$PUBLISH_HOST" "mkdir -p $(printf '%q' "$in") $(printf '%q' "$TMP")"
+    "${RSYNC[@]}" "$src/" "$PUBLISH_HOST:$in/" \
+        || { echo "rsync of $src failed -- re-run publish_unit, it resumes"; return 1; }
+    # -T: never move *into* a folder that appeared meanwhile; fail instead.
+    ssh -n "$PUBLISH_HOST" "mkdir -p $(printf '%q' "$(dirname "$dest")") && mv -T $(printf '%q' "$in") $(printf '%q' "$dest")"
+}
 ```
+
+Each title goes to its own library folder; never point a film at `Shows/` or
+an episode at the films folder. Call `publish_unit` once per new folder, not
+once per tree: a whole-tree rsync creates every folder up front, which is
+exactly the exposure this avoids. Step 9 then hashes the files at their final
+library paths, as before -- the rename does not touch the data.
+
+**If a title has already been catalogued as a Folder**, move its folder out
+of the library (into `$INCOMING`), let Jellyfin drop it (run a library scan,
+or wait for the monitor), then `mv -T` it back. Jellyfin then scans it
+fresh. Any watch progress on that title is lost.
 
 - `--no-perms --no-owner --no-group`, and `-rltD` rather than `-a`. exFAT
   stores no permissions or ownership: the mount fabricates them from
@@ -625,7 +733,12 @@ rsync -rltDvh --no-perms --no-owner --no-group --modify-window=1 \
 - The `mkdir` is required: rsync refuses a missing `--temp-dir` outright
   (code 1, nothing sent) rather than falling back to writing in place.
   `media-backup.sh` excludes `/.publish-tmp`, so in-flight data never
-  reaches a backup drive.
+  reaches a backup drive -- including whole folders waiting in
+  `.publish-tmp/incoming/`.
+- An interrupted `publish_unit` leaves its folder in `incoming/`, outside the
+  library, and a re-run resumes into it. A folder still in `incoming/` after
+  a run reported success is a title that never reached the library; the
+  step-8 check on `.publish-tmp` finds it.
 - Basenames can repeat across titles (`extras/Trailer.mkv`), and the partial
   dir is flat. A clash only costs efficiency: an interrupted file may resume
   against the wrong basis and resend more. rsync's own checksum still
@@ -664,9 +777,9 @@ Check every one of these before reporting success:
   `find /srv/media-backup/finished -type f -printf '%i %s %p\n' | sort`.
 - After a transfer, `$PUBLISH_ROOT/.publish-tmp` on the server is empty
   (`ssh -n nas2 "find …/.publish-tmp -type f"` prints nothing). Anything left
-  there is a file that never finished, and its title is not in the library
-  complete. Re-run the transfer; don't delete it, since that's what the
-  resume uses.
+  there is a file that never finished, or a title folder still waiting in
+  `incoming/` that was never moved into the library. Re-run the transfer;
+  don't delete it, since that's what the resume uses.
 - After a transfer, the remote size matches: `ssh nas2 find … -printf '%s %P\n'`
   against the same for the staging area. Do not trust rsync's exit code alone
   on exFAT, where it cannot set the metadata it would normally verify. Compare
@@ -696,18 +809,25 @@ all of them producing an answer that looked fine. Copy the block below rather
 than writing the loop from memory:
 
 ```bash
-STAGE=/srv/media-backup/ready_to_add/Movies
-REMOTE_MOVIES="$PUBLISH_ROOT/Movies"   # the root plus Movies, unlike the df above
+STAGE=/srv/media-backup/ready_to_add
+# Paths relative to $STAGE, so films and episodes go through one loop. The
+# first component says which library folder the file landed in.
 files=(
-  "Demon Seed (1977) [imdbid-tt0075931]/Demon Seed (1977) [imdbid-tt0075931].mkv"
-  "Demon Seed (1977) [imdbid-tt0075931]/extras/Additional Scene.mkv"
+  "Movies/Demon Seed (1977) [imdbid-tt0075931]/Demon Seed (1977) [imdbid-tt0075931].mkv"
+  "Movies/Demon Seed (1977) [imdbid-tt0075931]/extras/Additional Scene.mkv"
+  "Shows/Final Days of Planet Earth (2006) [imdbid-tt0478073]/Season 01/S01E01.mkv"
 )
 
 verified=0
 for f in "${files[@]}"; do
+    case "$f" in
+        Movies/*) remote="$PUBLISH_ROOT/$PUBLISH_MOVIES/${f#Movies/}" ;;
+        Shows/*)  remote="$PUBLISH_ROOT/$PUBLISH_SHOWS/${f#Shows/}" ;;
+        *) echo "not under Movies/ or Shows/: $f"; exit 1 ;;
+    esac
     local_hash=$(sha256sum "$STAGE/$f" | cut -d' ' -f1)
     # ssh -n, and printf %q -- see the three notes below.
-    remote_hash=$(ssh -n "$PUBLISH_HOST" "sha256sum $(printf '%q' "$REMOTE_MOVIES/$f")" | cut -d' ' -f1)
+    remote_hash=$(ssh -n "$PUBLISH_HOST" "sha256sum $(printf '%q' "$remote")" | cut -d' ' -f1)
     if [ -z "$remote_hash" ]; then
         echo "NO HASH from the server for $f -- not a mismatch, a broken command"
         exit 1
@@ -810,7 +930,7 @@ Then, in this order:
 
 ```json
 {"published_at": "2026-09-07T20:49:00Z",
- "destination": "nas2:/srv/dev-disk-by-uuid-0A63-B16B/Movies",
+ "destination": "nas2:/srv/dev-disk-by-uuid-7BFE-62A5/Movies",
  "files": [{"staged_as": "Match Point (2005) [imdbid-tt0416320].mkv",
             "sha256": "…", "size_bytes": 6262208596}]}
 ```
